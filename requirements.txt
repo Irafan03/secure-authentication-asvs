@@ -1,0 +1,12 @@
+# requirements.txt — P2 Authentification et protection
+# Versions épinglées pour reproductibilité et sécurité (ASVS A9)
+
+# Hachage de mot de passe (bcrypt, ASVS V2.4)
+bcrypt==4.2.1
+
+# Driver MySQL
+mysql-connector-python==9.1.0
+
+# Tests
+pytest==8.3.3
+pytest-cov==5.0.0
