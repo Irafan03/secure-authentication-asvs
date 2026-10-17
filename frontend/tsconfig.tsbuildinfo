@@ -1,0 +1,1 @@
+{"root":["./src/main.tsx","./src/test-setup.ts","./src/vite-env.d.ts","./src/api/client.ts","./src/api/types.ts","./src/auth/AuthContext.tsx","./src/components/PasswordField.tsx","./src/config/constants.ts","./src/pages/Pages.test.tsx","./src/pages/Pages.tsx"],"version":"5.7.3"}

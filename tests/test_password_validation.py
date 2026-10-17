@@ -4,7 +4,7 @@ Tests sans dépendance à la base de données
 """
 
 import pytest
-from auth_register import validate_password
+from backend.auth_register import validate_password
 
 
 # =============================================================================

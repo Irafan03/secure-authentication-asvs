@@ -3,8 +3,8 @@ test_asvs_level2.py — Tests de conformité ASVS 5.0.0 V6 Niveau 2
 """
 
 import pytest
-from auth_register import validate_password
-from auth_mfa import (
+from backend.auth_register import validate_password
+from backend.auth_mfa import (
     generate_totp_secret, generate_totp_uri, verify_totp_code,
     generate_recovery_codes, enroll_mfa, validate_mfa_enrollment
 )

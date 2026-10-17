@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 # Ajouter le répertoire parent au path pour les imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from auth_register import (
+from backend.auth_register import (
     validate_username, validate_email_address, validate_password,
     hash_password, verify_password, register_user, change_password,
     load_common_passwords, PasswordValidationError, RegistrationError

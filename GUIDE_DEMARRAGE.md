@@ -80,7 +80,7 @@ Les tables seront créées automatiquement au premier démarrage de l'applicatio
 Pour initialiser manuellement :
 
 ```bash
-python3 -c "from database import init_db; init_db()"
+python3 -c "from backend.database import init_db; init_db()"
 ```
 
 ## Démarrage de l'application
@@ -88,7 +88,7 @@ python3 -c "from database import init_db; init_db()"
 ### Mode développement
 
 ```bash
-python3 app.py
+python3 -m backend.app
 ```
 
 L'application sera accessible sur : **http://localhost:5000**
@@ -97,7 +97,7 @@ L'application sera accessible sur : **http://localhost:5000**
 
 ```bash
 pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 app:app
+gunicorn -w 4 -b 0.0.0.0:5000 backend.app:app
 ```
 
 ## Test de l'application
@@ -174,14 +174,19 @@ pytest tests/test_register.py -v
 
 ```
 secure-authentication-asvs/
-├── app.py                      # Application Flask (interface web)
-├── auth_register.py            # Module d'inscription
-├── auth_login.py               # Module de connexion
-├── auth_mfa.py                 # Module MFA/TOTP
-├── database.py                 # Gestion base de données
-├── config.py                   # Configuration centralisée
+├── backend/                     # Package Python du backend
+│   ├── backend/app.py                   # Application Flask
+│   ├── auth_*.py                # Authentification et MFA
+│   ├── backend/config.py                # Configuration centralisée
+│   ├── backend/database.py              # Gestion base de données
+│   └── ...
+├── backend/auth_register.py            # Module d'inscription
+├── backend/auth_login.py               # Module de connexion
+├── backend/auth_mfa.py                 # Module MFA/TOTP
+├── backend/database.py                 # Gestion base de données
+├── backend/config.py                   # Configuration centralisée
 ├── requirements.txt            # Dépendances Python
-├── common_passwords.txt        # Liste 3000+ mots de passe courants
+├── backend/common_passwords.txt        # Liste 3000+ mots de passe courants
 ├── templates/                  # Templates HTML
 │   ├── base.html
 │   ├── index.html
@@ -233,7 +238,7 @@ secure-authentication-asvs/
 
 ## Configuration avancée
 
-### Paramètres de sécurité (config.py)
+### Paramètres de sécurité (backend/config.py)
 
 ```python
 # Rate limiting
@@ -281,7 +286,7 @@ pip install Flask==3.0.3
 
 ### Port 5000 déjà utilisé
 
-Changez le port dans `app.py` :
+Changez le port dans `backend/app.py` :
 
 ```python
 app.run(debug=True, host='0.0.0.0', port=8000)
@@ -299,7 +304,7 @@ SHOW GRANTS FOR 'secure_auth_user'@'localhost';
 
 ### ⚠️ Avant de déployer en production
 
-1. **Désactiver le mode debug** dans `app.py` :
+1. **Désactiver le mode debug** dans `backend/app.py` :
    ```python
    app.run(debug=False)
    ```

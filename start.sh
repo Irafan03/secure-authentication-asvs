@@ -62,7 +62,7 @@ fi
 # Vérifier la connexion MySQL
 echo ""
 echo "🔍 Vérification de la connexion MySQL..."
-if python3 -c "from database import get_connection; get_connection().close()" 2>/dev/null; then
+if python3 -c "from backend.database import get_connection; get_connection().close()" 2>/dev/null; then
     echo "✅ Connexion MySQL réussie"
 else
     echo "❌ Erreur: Impossible de se connecter à MySQL"
@@ -79,7 +79,7 @@ fi
 # Initialiser la base de données
 echo ""
 echo "🗄️  Initialisation de la base de données..."
-python3 -c "from database import init_db; init_db()" 2>/dev/null || echo "⚠️  Tables déjà créées"
+python3 -c "from backend.database import init_db; init_db()" 2>/dev/null || echo "⚠️  Tables déjà créées"
 echo "✅ Base de données prête"
 
 # Démarrer l'application selon le mode
@@ -98,7 +98,7 @@ if [ "$MODE" = "prod" ]; then
     
     echo "🌐 Application disponible sur: http://0.0.0.0:$PORT"
     echo ""
-    gunicorn -w 4 -b 0.0.0.0:$PORT app:app
+    gunicorn -w 4 -b 0.0.0.0:$PORT backend.app:app
 else
     echo "🔧 Démarrage en mode DÉVELOPPEMENT sur le port $PORT"
     echo "================================================"
@@ -108,5 +108,5 @@ else
     echo "⚠️  Mode développement uniquement !"
     echo "   Pour la production, utilisez: ./start.sh prod"
     echo ""
-    python3 app.py
+    python3 -m backend.app
 fi
