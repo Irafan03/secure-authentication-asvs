@@ -1,378 +1,565 @@
 """
-auth_login.py — Authentification, sessions, rate limiting, contrôle d'accès
-ASVS v4.0 — Niveau 2 — P2 : Authentification et protection
-
-Couverture ASVS :
-  V2.2  — Limitation des tentatives (rate limiting)
-  V2.7  — Vérification sécurisée du mot de passe (bcrypt)
-  V3.2  — Gestion de session côté backend (token opaque 32 octets)
-  V3.3  — Expiration et invalidation de session
-  V2.5  — Pas de comptes par défaut actifs (admin/root)
-  V4.1  — Protection des fonctions authentifiées (décorateur)
+auth_login.py — Authentification sécurisée avec protection contre le brute force
+ASVS 5.0.0 — Niveau 2
 """
 
-import os
-import secrets
 import logging
-import functools
-from datetime import datetime, timedelta, timezone
-
-import bcrypt
-from mysql.connector import Error
-
+import secrets
+import time
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, Tuple
+from auth_register import verify_password, get_user_by_username, ph
 from database import get_connection
+from config import (
+    RATE_LIMIT_IP_MAX_ATTEMPTS, RATE_LIMIT_IP_WINDOW, RATE_LIMIT_IP_LOCKOUT,
+    RATE_LIMIT_USER_IP_MAX_ATTEMPTS, RATE_LIMIT_USER_IP_WINDOW, RATE_LIMIT_USER_IP_LOCKOUT,
+    RATE_LIMIT_USERNAME_MAX_ATTEMPTS, RATE_LIMIT_USERNAME_WINDOW,
+    RATE_LIMIT_USERNAME_DELAY_ENABLED, RATE_LIMIT_USERNAME_DELAY_BASE,
+    RATE_LIMIT_USERNAME_DELAY_MULTIPLIER,
+    SESSION_DURATION, SESSION_TOKEN_LENGTH, LOGIN_ATTEMPTS_RETENTION,
+    DUMMY_PASSWORD_HASH
+)
+import mysql.connector
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constantes de configuration
-# ---------------------------------------------------------------------------
-MAX_ATTEMPTS        = int(os.environ.get("LOGIN_MAX_ATTEMPTS", 5))
-LOCKOUT_WINDOW_MIN  = int(os.environ.get("LOGIN_LOCKOUT_WINDOW_MIN", 15))
-SESSION_DURATION_H  = int(os.environ.get("SESSION_DURATION_HOURS", 8))
-# Noms réservés qui NE doivent PAS exister en tant que comptes actifs
-FORBIDDEN_USERNAMES = {"admin", "root", "administrator", "superuser", "test", "guest"}
+# Hash factice généré au démarrage pour protection timing attack (6.3.8)
+_DUMMY_HASH = None
 
+def _get_dummy_hash() -> str:
+    """Génère ou retourne le hash factice pour les utilisateurs inexistants."""
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = ph.hash("dummy_password_for_timing_protection")
+    return _DUMMY_HASH
 
-# ---------------------------------------------------------------------------
-# Helpers internes
-# ---------------------------------------------------------------------------
+class AuthenticationError(Exception):
+    """Exception pour les erreurs d'authentification."""
+    pass
 
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)  # MySQL DATETIME sans TZ
+class AccountLockedError(AuthenticationError):
+    """Exception pour les comptes temporairement bloqués."""
+    pass
 
-
-def _record_attempt(conn, identifier: str, success: bool, ip: str | None) -> None:
-    """Enregistre une tentative de connexion dans login_attempts."""
-    sql = (
-        "INSERT INTO login_attempts (identifier, success, ip_address) "
-        "VALUES (%s, %s, %s)"
-    )
-    cursor = conn.cursor()
-    cursor.execute(sql, (identifier.lower(), int(success), ip))
-    conn.commit()
-    cursor.close()
-
-
-def _count_recent_failures(conn, identifier: str) -> int:
-    """Compte les échecs dans la fenêtre glissante LOCKOUT_WINDOW_MIN."""
-    since = _now_utc() - timedelta(minutes=LOCKOUT_WINDOW_MIN)
-    sql = (
-        "SELECT COUNT(*) FROM login_attempts "
-        "WHERE identifier = %s AND success = 0 AND attempted_at >= %s"
-    )
-    cursor = conn.cursor()
-    cursor.execute(sql, (identifier.lower(), since))
-    (count,) = cursor.fetchone()
-    cursor.close()
-    return count
-
-
-# ---------------------------------------------------------------------------
-# 1. Rate limiting / verrouillage
-# ---------------------------------------------------------------------------
-
-def is_locked_out(identifier: str) -> bool:
+def generate_session_token() -> str:
     """
-    Retourne True si l'identifiant a dépassé MAX_ATTEMPTS échecs dans
-    la fenêtre de LOCKOUT_WINDOW_MIN minutes.
+    Génère un token de session cryptographiquement sûr.
+    
+    Returns:
+        Token de session hexadécimal
+    """
+    return secrets.token_hex(SESSION_TOKEN_LENGTH)
 
-    Protection ASVS V2.2.1 — l'attaquant ne peut pas forcer brutalement.
+def record_login_attempt(username: str, ip_address: str, success: bool) -> None:
+    """
+    Enregistre une tentative de connexion pour le rate limiting.
+    
+    ASVS 6.3.1: Enregistre séparément par IP, par (username, IP) et par username
+    pour permettre des seuils différents.
+    
+    Args:
+        username: Nom d'utilisateur (peut être vide si énumération)
+        ip_address: Adresse IP du client
+        success: True si la connexion a réussi
     """
     try:
-        conn = get_connection()
-        locked = _count_recent_failures(conn, identifier) >= MAX_ATTEMPTS
-        conn.close()
-        if locked:
-            logger.warning("Compte/IP verrouillé temporairement : %s", identifier)
-        return locked
-    except Error as exc:
-        logger.error("Erreur is_locked_out : %s", exc)
-        # En cas d'erreur DB, on refuse par sécurité
-        return True
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Enregistrement par IP
+            cursor.execute(
+                "INSERT INTO login_attempts (identifier, success, ip_address, identifier_type) VALUES (%s, %s, %s, %s)",
+                (ip_address, success, ip_address, 'ip')
+            )
+            
+            # Enregistrement par (username, IP) si username fourni
+            if username:
+                user_ip_identifier = f"{username}:{ip_address}"
+                cursor.execute(
+                    "INSERT INTO login_attempts (identifier, success, ip_address, identifier_type) VALUES (%s, %s, %s, %s)",
+                    (user_ip_identifier, success, ip_address, 'user_ip')
+                )
+                
+                # Enregistrement par username seul
+                cursor.execute(
+                    "INSERT INTO login_attempts (identifier, success, ip_address, identifier_type) VALUES (%s, %s, %s, %s)",
+                    (username, success, ip_address, 'username')
+                )
+            
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Erreur lors de l'enregistrement de la tentative de connexion: {e}")
 
-
-# ---------------------------------------------------------------------------
-# 2. Authentification
-# ---------------------------------------------------------------------------
-
-def login(username: str, password: str, ip_address: str | None = None) -> dict:
+def check_rate_limit(username: str, ip_address: str) -> Dict[str, Any]:
     """
-    Vérifie les identifiants et ouvre une session si valide.
-
-    Retourne :
-        {"success": True,  "session_token": "<token>", "user_id": <id>}
-        {"success": False, "error": "<raison>"}
-
-    ASVS V2.2 — rate limiting
-    ASVS V2.7 — vérification bcrypt, pas de timing attack (bcrypt constant-time)
-    ASVS V3.2 — token de session opaque, 256 bits
+    Vérifie le rate limiting selon ASVS 6.3.1.
+    
+    Trois niveaux de protection:
+    1. Par IP: empêche les attaques distribuées depuis une même IP
+    2. Par (username, IP): protège contre les attaques ciblées
+    3. Par username: seuil très élevé avec ralentissement progressif (évite DoS sur compte)
+    
+    Args:
+        username: Nom d'utilisateur
+        ip_address: Adresse IP du client
+        
+    Returns:
+        Dict avec:
+        - 'allowed': True si la connexion est autorisée
+        - 'reason': Raison du blocage si 'allowed' est False
+        - 'delay': Délai à appliquer avant traitement (secondes)
+        - 'unlock_time': Heure de déblocage si bloqué
     """
-    if not username or not password:
-        return {"success": False, "error": "Identifiants manquants."}
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            current_time = datetime.now()
+            
+            # 1. Vérifier rate limit par IP
+            ip_cutoff = current_time - RATE_LIMIT_IP_WINDOW
+            cursor.execute("""
+                SELECT COUNT(*) as failed_count, MAX(attempted_at) as last_attempt
+                FROM login_attempts 
+                WHERE identifier = %s 
+                  AND identifier_type = 'ip'
+                  AND attempted_at > %s 
+                  AND success = 0
+            """, (ip_address, ip_cutoff))
+            
+            result = cursor.fetchone()
+            ip_failed_attempts = result[0] if result else 0
+            ip_last_attempt = result[1] if result and result[1] else None
+            
+            if ip_failed_attempts >= RATE_LIMIT_IP_MAX_ATTEMPTS and ip_last_attempt:
+                unlock_time = ip_last_attempt + RATE_LIMIT_IP_LOCKOUT
+                if current_time < unlock_time:
+                    return {
+                        'allowed': False,
+                        'reason': f"Trop de tentatives depuis cette adresse IP. Réessayez après {unlock_time.strftime('%H:%M:%S')}",
+                        'unlock_time': unlock_time,
+                        'delay': 0
+                    }
+            
+            # 2. Vérifier rate limit par (username, IP)
+            user_ip_identifier = f"{username}:{ip_address}"
+            user_ip_cutoff = current_time - RATE_LIMIT_USER_IP_WINDOW
+            cursor.execute("""
+                SELECT COUNT(*) as failed_count, MAX(attempted_at) as last_attempt
+                FROM login_attempts 
+                WHERE identifier = %s 
+                  AND identifier_type = 'user_ip'
+                  AND attempted_at > %s 
+                  AND success = 0
+            """, (user_ip_identifier, user_ip_cutoff))
+            
+            result = cursor.fetchone()
+            user_ip_failed_attempts = result[0] if result else 0
+            user_ip_last_attempt = result[1] if result and result[1] else None
+            
+            if user_ip_failed_attempts >= RATE_LIMIT_USER_IP_MAX_ATTEMPTS and user_ip_last_attempt:
+                unlock_time = user_ip_last_attempt + RATE_LIMIT_USER_IP_LOCKOUT
+                if current_time < unlock_time:
+                    return {
+                        'allowed': False,
+                        'reason': f"Trop de tentatives échouées. Réessayez après {unlock_time.strftime('%H:%M:%S')}",
+                        'unlock_time': unlock_time,
+                        'delay': 0
+                    }
+            
+            # 3. Vérifier rate limit par username (seuil élevé + délai progressif)
+            username_cutoff = current_time - RATE_LIMIT_USERNAME_WINDOW
+            cursor.execute("""
+                SELECT COUNT(*) as failed_count
+                FROM login_attempts 
+                WHERE identifier = %s 
+                  AND identifier_type = 'username'
+                  AND attempted_at > %s 
+                  AND success = 0
+            """, (username, username_cutoff))
+            
+            result = cursor.fetchone()
+            username_failed_attempts = result[0] if result else 0
+            
+            # Calculer le délai progressif si activé
+            delay = 0
+            if RATE_LIMIT_USERNAME_DELAY_ENABLED and username_failed_attempts > 0:
+                # Délai exponentiel: base * (multiplier ^ failed_attempts)
+                delay = RATE_LIMIT_USERNAME_DELAY_BASE * (RATE_LIMIT_USERNAME_DELAY_MULTIPLIER ** username_failed_attempts)
+                # Limiter le délai max à 30 secondes
+                delay = min(delay, 30.0)
+            
+            # Seuil très élevé pour éviter le DoS sur compte légitime
+            if username_failed_attempts >= RATE_LIMIT_USERNAME_MAX_ATTEMPTS:
+                return {
+                    'allowed': False,
+                    'reason': "Trop de tentatives de connexion pour ce compte. Veuillez réessayer plus tard",
+                    'unlock_time': current_time + timedelta(hours=1),
+                    'delay': 0
+                }
+            
+            return {
+                'allowed': True,
+                'reason': None,
+                'unlock_time': None,
+                'delay': delay
+            }
+            
+    except Exception as e:
+        logger.error(f"Erreur lors de la vérification du rate limit: {e}")
+        # En cas d'erreur, autoriser mais logger
+        return {'allowed': True, 'reason': None, 'unlock_time': None, 'delay': 0}
 
-    identifier = username.lower()
+def cleanup_old_attempts() -> None:
+    """Nettoie les anciennes tentatives de connexion."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cutoff_time = datetime.now() - LOGIN_ATTEMPTS_RETENTION
+            
+            cursor.execute(
+                "DELETE FROM login_attempts WHERE attempted_at < %s",
+                (cutoff_time,)
+            )
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                logger.info(f"Nettoyé {deleted_count} anciennes tentatives de connexion")
+                
+    except Exception as e:
+        logger.error(f"Erreur lors du nettoyage des tentatives: {e}")
 
-    # — Rate limiting —
-    if is_locked_out(identifier):
+def create_session(user_id: int, ip_address: str = None, mfa_verified: bool = False) -> str:
+    """
+    Crée une nouvelle session pour un utilisateur.
+    
+    ASVS 6.3.3, 6.5.1: Le MFA doit être vérifié avant l'émission de la session.
+    
+    Args:
+        user_id: ID de l'utilisateur
+        ip_address: Adresse IP du client
+        mfa_verified: True si le MFA a été vérifié
+        
+    Returns:
+        Token de session
+        
+    Raises:
+        AuthenticationError: Si la création de session échoue
+    """
+    try:
+        session_token = generate_session_token()
+        expires_at = datetime.now() + SESSION_DURATION
+        
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO sessions (session_token, user_id, expires_at, ip_address, mfa_verified)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (session_token, user_id, expires_at, ip_address, mfa_verified))
+            
+            conn.commit()
+            
+        logger.info(f"Session créée pour l'utilisateur ID {user_id} (MFA: {mfa_verified})")
+        return session_token
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la création de session pour l'utilisateur {user_id}: {e}")
+        raise AuthenticationError("Erreur lors de la création de session")
+
+def validate_session(session_token: str) -> Optional[Dict[str, Any]]:
+    """
+    Valide un token de session.
+    
+    Args:
+        session_token: Le token de session à valider
+        
+    Returns:
+        Dict avec les informations de l'utilisateur si valide, None sinon
+    """
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT s.user_id, s.created_at, s.expires_at, s.ip_address, s.mfa_verified,
+                       u.username, u.email, u.is_active, u.role, u.mfa_enabled
+                FROM sessions s
+                JOIN users u ON s.user_id = u.id
+                WHERE s.session_token = %s 
+                  AND s.expires_at > NOW()
+                  AND s.invalidated = 0
+                  AND u.is_active = 1
+            """, (session_token,))
+            
+            session_data = cursor.fetchone()
+            
+            if session_data:
+                logger.debug(f"Session valide pour l'utilisateur {session_data['username']}")
+                return session_data
+            else:
+                logger.debug(f"Session invalide ou expirée: {session_token}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"Erreur lors de la validation de session: {e}")
+        return None
+
+def invalidate_session(session_token: str) -> bool:
+    """
+    Invalide une session (déconnexion).
+    
+    Args:
+        session_token: Le token de session à invalider
+        
+    Returns:
+        True si la session a été invalidée avec succès
+    """
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE sessions 
+                SET invalidated = 1 
+                WHERE session_token = %s
+            """, (session_token,))
+            
+            conn.commit()
+            
+            if cursor.rowcount > 0:
+                logger.info(f"Session invalidée: {session_token}")
+                return True
+            else:
+                logger.warning(f"Tentative d'invalidation d'une session inexistante: {session_token}")
+                return False
+                
+    except Exception as e:
+        logger.error(f"Erreur lors de l'invalidation de session: {e}")
+        return False
+
+def cleanup_expired_sessions() -> None:
+    """Nettoie les sessions expirées."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                DELETE FROM sessions 
+                WHERE expires_at < NOW() OR invalidated = 1
+            """)
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                logger.info(f"Nettoyé {deleted_count} sessions expirées")
+                
+    except Exception as e:
+        logger.error(f"Erreur lors du nettoyage des sessions: {e}")
+
+def authenticate_user(username: str, password: str, ip_address: str = "unknown", totp_code: str = None, recovery_code: str = None) -> Dict[str, Any]:
+    """
+    Authentifie un utilisateur avec protection contre le brute force.
+    
+    ASVS 6.3.1: Rate limiting multi-niveaux (IP, user+IP, username)
+    ASVS 6.3.3, 6.5.1: MFA obligatoire si activé, vérifié avant émission de session
+    ASVS 6.3.8: Protection timing attack (hash factice pour utilisateur inexistant)
+    
+    Args:
+        username: Nom d'utilisateur
+        password: Mot de passe en clair
+        ip_address: Adresse IP du client
+        totp_code: Code TOTP (si MFA activé)
+        recovery_code: Code de récupération (si MFA activé et TOTP non fourni)
+        
+    Returns:
+        Dict avec 'success' (bool), 'session_token' (str si succès), 'mfa_required' (bool), 'errors' (list)
+    """
+    # Import ici pour éviter la dépendance circulaire
+    from auth_mfa import is_mfa_enabled, get_totp_secret, verify_totp_code, verify_recovery_code
+    
+    # Nettoyer les anciennes tentatives périodiquement
+    cleanup_old_attempts()
+    cleanup_expired_sessions()
+    
+    # Vérifier la limitation de taux
+    rate_limit_result = check_rate_limit(username, ip_address)
+    
+    # Appliquer un délai progressif si nécessaire (6.3.1)
+    if rate_limit_result['delay'] > 0:
+        time.sleep(rate_limit_result['delay'])
+    
+    if not rate_limit_result['allowed']:
+        record_login_attempt(username, ip_address, False)
         return {
             "success": False,
-            "error": (
-                f"Compte temporairement verrouillé après {MAX_ATTEMPTS} tentatives. "
-                f"Réessayez dans {LOCKOUT_WINDOW_MIN} minutes."
-            ),
+            "errors": [rate_limit_result['reason']],
+            "locked_until": rate_limit_result.get('unlock_time')
         }
-
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(dictionary=True)
-
-        # Récupérer l'utilisateur (paramètres préparés — pas d'injection SQL)
-        cursor.execute(
-            "SELECT id, username, password_hash, is_active "
-            "FROM users WHERE username = %s LIMIT 1",
-            (identifier,),
-        )
-        user = cursor.fetchone()
-        cursor.close()
-
-        # — Vérification intentionnellement constante pour éviter l'énumération —
-        # Hash bcrypt valide d'une chaîne aléatoire : utilisé quand l'utilisateur
-        # n'existe pas, pour que bcrypt.checkpw s'exécute quand même (timing constant).
-        # ASVS V2.7.1 — pas d'énumération par différence de temps de réponse.
-        _DUMMY_HASH = b"$2b$12$FwIJVaHGnhg48J.dWQUxseDUf8j7/WD3wnodeiPTXOJiyjYAsn3.O"
-        stored_hash = user["password_hash"].encode() if user else _DUMMY_HASH
-
-        password_ok = bcrypt.checkpw(password.encode("utf-8"), stored_hash)
-
-        if not user or not password_ok:
-            _record_attempt(conn, identifier, success=False, ip=ip_address)
-            conn.close()
-            logger.warning("Échec de connexion pour : %s (IP: %s)", identifier, ip_address)
-            return {"success": False, "error": "Identifiants incorrects."}
-
-        if not user["is_active"]:
-            _record_attempt(conn, identifier, success=False, ip=ip_address)
-            conn.close()
-            return {"success": False, "error": "Compte désactivé."}
-
-        # — Créer la session —
-        session_token = secrets.token_hex(32)          # 256 bits, opaque
-        expires_at    = _now_utc() + timedelta(hours=SESSION_DURATION_H)
-
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO sessions (session_token, user_id, expires_at, ip_address) "
-            "VALUES (%s, %s, %s, %s)",
-            (session_token, user["id"], expires_at, ip_address),
-        )
-        conn.commit()
-        cursor.close()
-
-        _record_attempt(conn, identifier, success=True, ip=ip_address)
-        conn.close()
-
-        logger.info(
-            "Connexion réussie — user_id=%s, IP=%s, expire=%s",
-            user["id"], ip_address, expires_at,
-        )
+    
+    # Récupérer l'utilisateur
+    user = get_user_by_username(username)
+    
+    # ASVS 6.3.8: Protection timing attack
+    # Si l'utilisateur n'existe pas, exécuter quand même une vérification Argon2
+    # avec un hash factice pour avoir un temps de réponse comparable
+    if not user:
+        # Vérifier avec un hash factice pour garder le même timing
+        try:
+            ph.verify(_get_dummy_hash(), "dummy_password")
+        except:
+            pass
+        record_login_attempt(username, ip_address, False)
         return {
-            "success":       True,
+            "success": False,
+            "errors": ["Nom d'utilisateur ou mot de passe incorrect"]
+        }
+    
+    # Vérifier si l'utilisateur est actif
+    if not user["is_active"]:
+        # Vérifier avec hash factice pour timing constant
+        try:
+            ph.verify(_get_dummy_hash(), "dummy_password")
+        except:
+            pass
+        record_login_attempt(username, ip_address, False)
+        return {
+            "success": False,
+            "errors": ["Nom d'utilisateur ou mot de passe incorrect"]  # Message générique
+        }
+    
+    # Vérifier le mot de passe (timing réel)
+    if not verify_password(password, user["password_hash"]):
+        record_login_attempt(username, ip_address, False)
+        return {
+            "success": False,
+            "errors": ["Nom d'utilisateur ou mot de passe incorrect"]
+        }
+    
+    # Mot de passe correct, vérifier si MFA est requis
+    user_id = user["id"]
+    mfa_required = is_mfa_enabled(user_id)
+    
+    if mfa_required:
+        # MFA est activé, vérifier le second facteur
+        if not totp_code and not recovery_code:
+            # Pas de second facteur fourni, demander le code
+            # Ne pas créer de session, mais indiquer que le MFA est requis
+            return {
+                "success": False,
+                "mfa_required": True,
+                "errors": ["Second facteur requis (code TOTP ou code de récupération)"],
+                "user_id_temp": user_id  # Pour la prochaine requête
+            }
+        
+        # Vérifier le second facteur
+        mfa_valid = False
+        
+        if totp_code:
+            # Vérifier le code TOTP
+            secret = get_totp_secret(user_id)
+            if secret:
+                mfa_valid = verify_totp_code(secret, totp_code, user_id)
+            
+        elif recovery_code:
+            # Vérifier le code de récupération
+            mfa_valid = verify_recovery_code(user_id, recovery_code)
+        
+        if not mfa_valid:
+            record_login_attempt(username, ip_address, False)
+            return {
+                "success": False,
+                "errors": ["Code d'authentification invalide"]
+            }
+    
+    # Authentification réussie (mot de passe + MFA si requis)
+    try:
+        session_token = create_session(user_id, ip_address, mfa_verified=mfa_required)
+        record_login_attempt(username, ip_address, True)
+        
+        logger.info(f"Connexion réussie pour l'utilisateur: {username} (MFA: {mfa_required})")
+        
+        return {
+            "success": True,
             "session_token": session_token,
-            "user_id":       user["id"],
-            "expires_at":    expires_at.isoformat(),
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "email": user["email"],
+                "role": user["role"]
+            }
         }
-
-    except Error as exc:
-        logger.error("Erreur lors du login : %s", exc)
-        return {"success": False, "error": "Erreur interne du serveur."}
-
-
-# ---------------------------------------------------------------------------
-# 3. Validation de session
-# ---------------------------------------------------------------------------
-
-def validate_session(session_token: str) -> dict | None:
-    """
-    Vérifie qu'un token de session est valide (non expiré, non invalidé).
-
-    Retourne les infos utilisateur ou None.
-    ASVS V3.2.1 — token opaque, stocké côté serveur.
-    ASVS V3.3.1 — expiration obligatoire.
-    """
-    if not session_token:
-        return None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT s.user_id, s.expires_at, s.invalidated, "
-            "       u.username, u.role, u.is_active "
-            "FROM sessions s "
-            "JOIN users u ON u.id = s.user_id "
-            "WHERE s.session_token = %s LIMIT 1",
-            (session_token,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-
-        if not row:
-            return None
-        if row["invalidated"]:
-            return None
-        if row["expires_at"] < _now_utc():
-            logger.info("Session expirée pour user_id=%s", row["user_id"])
-            return None
-        if not row["is_active"]:
-            return None
-
+        
+    except AuthenticationError as e:
+        record_login_attempt(username, ip_address, False)
         return {
-            "user_id":  row["user_id"],
-            "username": row["username"],
-            "role":     row["role"],
+            "success": False,
+            "errors": [str(e)]
         }
 
-    except Error as exc:
-        logger.error("Erreur validate_session : %s", exc)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# 4. Déconnexion
-# ---------------------------------------------------------------------------
-
-def logout(session_token: str) -> bool:
+def logout_user(session_token: str) -> Dict[str, Any]:
     """
-    Invalide le token de session côté serveur.
-    ASVS V3.3.1 — invalidation immédiate à la déconnexion.
+    Déconnecte un utilisateur en invalidant sa session.
+    
+    Args:
+        session_token: Token de session à invalider
+        
+    Returns:
+        Dict avec 'success' (bool) et 'message' (str)
     """
-    if not session_token:
-        return False
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE sessions SET invalidated = 1 "
-            "WHERE session_token = %s AND invalidated = 0",
-            (session_token,),
-        )
-        affected = cursor.rowcount
-        conn.commit()
-        cursor.close()
-        conn.close()
-        logger.info("Session invalidée (token=***%s)", session_token[-6:])
-        return affected > 0
-    except Error as exc:
-        logger.error("Erreur logout : %s", exc)
-        return False
+    success = invalidate_session(session_token)
+    
+    return {
+        "success": success,
+        "message": "Déconnexion réussie" if success else "Erreur lors de la déconnexion"
+    }
 
-
-def logout_all(user_id: int) -> int:
+def get_login_attempts_history(identifier: str, hours: int = 24) -> list:
     """
-    Invalide TOUTES les sessions actives d'un utilisateur (ex: changement de mdp).
-    Retourne le nombre de sessions fermées.
-    ASVS V3.3.3 — possibilité de révoquer toutes les sessions.
+    Récupère l'historique des tentatives de connexion pour un identifiant.
+    
+    Args:
+        identifier: Nom d'utilisateur ou adresse IP
+        hours: Nombre d'heures d'historique à récupérer
+        
+    Returns:
+        Liste des tentatives de connexion
     """
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE sessions SET invalidated = 1 "
-            "WHERE user_id = %s AND invalidated = 0",
-            (user_id,),
-        )
-        count = cursor.rowcount
-        conn.commit()
-        cursor.close()
-        conn.close()
-        logger.info("Toutes sessions invalidées pour user_id=%s (%d sessions)", user_id, count)
-        return count
-    except Error as exc:
-        logger.error("Erreur logout_all : %s", exc)
-        return 0
+        with get_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            
+            cutoff_time = datetime.now() - timedelta(hours=hours)
+            
+            cursor.execute("""
+                SELECT attempted_at, success, ip_address
+                FROM login_attempts
+                WHERE identifier = %s AND attempted_at > %s
+                ORDER BY attempted_at DESC
+            """, (identifier, cutoff_time))
+            
+            return cursor.fetchall()
+            
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération de l'historique: {e}")
+        return []
 
+# Fonctions utilitaires pour les tests
+def test_authentication():
+    """Fonction de test pour l'authentification."""
+    print("=== Test d'authentification ===")
+    
+    # Test avec utilisateur inexistant
+    result = authenticate_user("inexistant", "motdepasse")
+    print(f"Utilisateur inexistant: {'✗ Échec attendu' if not result['success'] else '✓ Succès inattendu'}")
+    
+    print("\nPour tester complètement, créez d'abord un utilisateur avec auth_register.py")
 
-# ---------------------------------------------------------------------------
-# 5. Décorateur de protection d'accès
-# ---------------------------------------------------------------------------
-
-def require_auth(role: str | None = None):
-    """
-    Décorateur qui protège une fonction en exigeant une session valide.
-    Utilisation :
-
-        @require_auth()
-        def get_profile(session_token, ...):
-            ...
-
-        @require_auth(role="admin")
-        def admin_panel(session_token, ...):
-            ...
-
-    Le premier argument positionnel de la fonction décorée DOIT être
-    `session_token` (str).
-
-    ASVS V4.1.1 — toutes les routes protégées vérifient l'authentification.
-    ASVS V4.1.2 — contrôle de rôle optionnel.
-    """
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            # Récupération du token (1er arg ou kwarg)
-            token = kwargs.get("session_token") or (args[0] if args else None)
-            user_info = validate_session(token)
-
-            if user_info is None:
-                return {"error": "Non authentifié.", "status": 401}
-
-            if role and user_info.get("role") != role:
-                logger.warning(
-                    "Accès refusé — user_id=%s, rôle=%s, rôle requis=%s",
-                    user_info["user_id"], user_info["role"], role,
-                )
-                return {"error": "Accès refusé : privilèges insuffisants.", "status": 403}
-
-            # Injecter les infos utilisateur via kwarg
-            kwargs["_user"] = user_info
-            return func(*args, **kwargs)
-
-        return wrapper
-    return decorator
-
-
-# ---------------------------------------------------------------------------
-# 6. Vérification absence de comptes par défaut
-# ---------------------------------------------------------------------------
-
-def check_no_default_accounts() -> dict:
-    """
-    Vérifie qu'aucun compte avec un nom réservé (admin, root…) n'est actif.
-    ASVS V2.5.6 — pas de credentials par défaut.
-
-    Retourne :
-        {"ok": True}  ou  {"ok": False, "found": ["admin", ...]}
-    """
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        placeholders = ", ".join(["%s"] * len(FORBIDDEN_USERNAMES))
-        cursor.execute(
-            f"SELECT username FROM users "
-            f"WHERE username IN ({placeholders}) AND is_active = 1",
-            tuple(FORBIDDEN_USERNAMES),
-        )
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-
-        if rows:
-            found = [r[0] for r in rows]
-            logger.error("Comptes par défaut actifs détectés : %s", found)
-            return {"ok": False, "found": found}
-
-        return {"ok": True}
-
-    except Error as exc:
-        logger.error("Erreur check_no_default_accounts : %s", exc)
-        return {"ok": False, "found": [], "error": str(exc)}
+if __name__ == "__main__":
+    # Configuration du logging pour les tests
+    logging.basicConfig(level=logging.INFO)
+    
+    # Test de base
+    test_authentication()
