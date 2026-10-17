@@ -8,6 +8,12 @@ import logging
 import mysql.connector
 from mysql.connector import pooling, Error
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -60,6 +66,7 @@ SCHEMA_SQL = [
         email         VARCHAR(255) NOT NULL UNIQUE,
         password_hash VARCHAR(255) NOT NULL,
         is_active     TINYINT(1)   NOT NULL DEFAULT 1,
+        mfa_enabled   TINYINT(1)   NOT NULL DEFAULT 0,
         role          ENUM('user','admin') NOT NULL DEFAULT 'user',
         created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -136,12 +143,6 @@ SCHEMA_SQL = [
         INDEX idx_user_code_time (user_id, code_hash, used_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
-
-    # Ajouter la colonne mfa_enabled à la table users si elle n'existe pas
-    """
-    ALTER TABLE users 
-    ADD COLUMN IF NOT EXISTS mfa_enabled TINYINT(1) NOT NULL DEFAULT 0;
-    """,
 ]
 
 
@@ -152,6 +153,11 @@ def init_db() -> None:
         cursor = conn.cursor()
         for stmt in SCHEMA_SQL:
             cursor.execute(stmt)
+        # S'assurer que mfa_enabled existe
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN mfa_enabled TINYINT(1) NOT NULL DEFAULT 0")
+        except Error:
+            pass  # Déjà présente ou erreur ignorée
         conn.commit()
         cursor.close()
         conn.close()

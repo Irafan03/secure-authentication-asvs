@@ -1,0 +1,48 @@
+# =============================================================================
+# Fichier de mots contextuels interdits dans les mots de passe
+# ASVS 5.0.0 V6.2.11 (L2)
+# =============================================================================
+#
+# Ce fichier contient les mots spécifiques au contexte de l'application qui
+# sont interdits dans les mots de passe. La comparaison est insensible à la
+# casse : si le mot de passe contient l'un de ces mots (en tant que sous-chaîne),
+# il est refusé.
+#
+# Catégories incluses :
+# - Nom du projet et ses variantes
+# - Nom de l'organisation/entreprise
+# - Nom du produit/service
+# - Termes techniques liés au domaine
+# - URL et noms de domaine du service
+#
+# Format : un mot par ligne, lignes vides et commentaires (#) ignorés.
+# =============================================================================
+
+# --- Nom du projet ---
+secure
+secureauthentication
+secureauth
+secure-auth
+secure_auth
+
+# --- Acronymes et abréviations du projet ---
+asvs
+
+# --- Termes de l'application ---
+authentication
+auth
+login
+signin
+signup
+register
+
+# --- Nom de l'organisation (à adapter) ---
+mycompany
+myorganization
+myorg
+
+# --- Nom du produit/service (à adapter) ---
+myapp
+myproduct
+myservice
+

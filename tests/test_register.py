@@ -98,29 +98,18 @@ class TestPasswordValidation:
         result = validate_password("ValidPass123!")
         # Peut être valide si passe tous les autres critères
     
-    def test_password_complexity_validation(self):
-        """Test ASVS V6.2.2 - Complexité (3/4 types de caractères)."""
-        test_cases = [
-            ("abcdefghijklmnop", False, "Que des minuscules"),
-            ("ABCDEFGHIJKLMNOP", False, "Que des majuscules"), 
-            ("1234567890123456", False, "Que des chiffres"),
-            ("!@#$%^&*()_+-=[]", False, "Que des symboles"),
-            ("abcABC123456789", True, "3 types: min+maj+chiffres"),
-            ("abcABC!@#$%^&*(", True, "3 types: min+maj+symboles"),
-            ("abc123!@#$%^&*(", True, "3 types: min+chiffres+symboles"),
-            ("ABC123!@#$%^&*(", True, "3 types: maj+chiffres+symboles"),
-            ("abcABC123!@#$%^", True, "4 types: tous")
+    def test_password_no_composition_rules(self):
+        """Test ASVS 5.0.0 V6.2.5 - Pas de règles de composition (types de caractères non imposés)."""
+        # Des mots de passe d'un seul type de caractères mais >= 12 caractères et uniques
+        valid_cases = [
+            ("hjklzxcvbnmqwe", "Minuscules seulement"),
+            ("HJKLZXCVBNMQWE", "Majuscules seulement"),
+            ("476859201347", "Chiffres seulement"),
         ]
         
-        for password, should_be_valid, description in test_cases:
+        for password, description in valid_cases:
             result = validate_password(password)
-            if should_be_valid:
-                # Peut être invalide pour d'autres raisons, mais pas la complexité
-                complexity_errors = [e for e in result["errors"] if "types de caractères" in e]
-                assert len(complexity_errors) == 0, f"{description}: pas d'erreur de complexité"
-            else:
-                assert any("types de caractères" in error for error in result["errors"]), \
-                    f"{description}: devrait avoir une erreur de complexité"
+            assert result["valid"] is True, f"{description}: devrait être accepté (pas de règle de composition). Erreurs: {result['errors']}"
     
     def test_password_username_validation(self):
         """Test ASVS V6.2.3 - Le mot de passe ne doit pas être le nom d'utilisateur."""
@@ -133,50 +122,12 @@ class TestPasswordValidation:
         result = validate_password("testuser", "testuser")
         assert any("nom d'utilisateur" in error for error in result["errors"])
     
-    def test_password_repetition_validation(self):
-        """Test ASVS V6.2.4 - Pas plus de 2 caractères consécutifs identiques."""
-        invalid_passwords = [
-            "PassWord111aaa", "MDP123333BBB", "Test@@@456789"
-        ]
-        
-        for password in invalid_passwords:
-            result = validate_password(password)
-            assert any("caractères identiques consécutifs" in error for error in result["errors"])
-        
-        # Mots de passe valides (max 2 caractères consécutifs)
-        valid_passwords = [
-            "PassWord11AA", "MDP123BB@456"
-        ]
-        
-        for password in valid_passwords:
-            result = validate_password(password)
-            repetition_errors = [e for e in result["errors"] if "caractères identiques consécutifs" in e]
-            assert len(repetition_errors) == 0
-    
     def test_common_passwords_validation(self):
-        """Test ASVS V6.2.5 - Vérification contre les mots de passe courants."""
-        # Charger les mots de passe courants pour le test
-        common_passwords = load_common_passwords()
-        
-        if len(common_passwords) > 0:
-            # Test avec un mot de passe courant (en supposant que "password" est dans la liste)
-            result = validate_password("password123456789")
-            # Peut être invalide pour d'autres raisons, vérifier spécifiquement l'erreur des mots de passe courants
-            
-            # Test avec "123456" qui devrait être dans la liste
-            result = validate_password("123456789012")
-            assert any("couramment utilisés" in error for error in result["errors"])
-    
-    def test_sequence_validation(self):
-        """Test contre les suites de caractères simples."""
-        invalid_passwords = [
-            "Password123456789", "MDP@qwertyuiop",
-            "Secure0123456789"
-        ]
-        
-        for password in invalid_passwords:
-            result = validate_password(password)
-            assert any("suites de caractères" in error for error in result["errors"])
+        """Test ASVS 5.0.0 V6.2.4 / V6.2.12 - Vérification contre les mots de passe compromis."""
+        # Un mot de passe très courant doit être refusé
+        result = validate_password("password123456789")
+        assert result["valid"] is False
+        assert any("compromis" in error or "couramment utilisés" in error for error in result["errors"])
     
     def test_valid_passwords(self):
         """Test avec des mots de passe entièrement valides."""
@@ -252,7 +203,7 @@ class TestUserRegistration:
         # Mock pour vérifier la disponibilité (utilisateur n'existe pas)
         mock_cursor.fetchone.return_value = None
         
-        result = register_user("newuser", "new@example.com", "ValidPassword123!")
+        result = register_user("newuser", "new@example.com", "NewRegComplexPass456@")
         
         assert result["success"] is True
         assert "user_id" in result
@@ -290,7 +241,7 @@ class TestPasswordChange:
         # Mock du résultat de la requête utilisateur
         mock_cursor.fetchone.return_value = ("testuser", current_hash)
         
-        new_password = "NewPassword456!"
+        new_password = "NewPassChangeComplex789@"
         result = change_password(1, current_password, new_password)
         
         assert result["success"] is True

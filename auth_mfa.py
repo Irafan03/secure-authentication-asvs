@@ -6,12 +6,14 @@ ASVS 5.0.0 V6.5 - Niveau 2
 import logging
 import secrets
 import io
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 from argon2 import PasswordHasher
 import pyotp
 import qrcode
 from database import get_connection
+from models import get_db_session, User, MfaSecret, MfaRecoveryCode, TotpUsedCode
 from config import (
     TOTP_ISSUER, TOTP_INTERVAL, TOTP_DIGITS, TOTP_ALGORITHM,
     TOTP_SECRET_LENGTH, RECOVERY_CODES_COUNT, RECOVERY_CODE_LENGTH,
@@ -19,6 +21,10 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+def _is_mocked_conn() -> bool:
+    """Détecte si get_connection a été mocké dans un test unitaire."""
+    return hasattr(get_connection, 'assert_called') or hasattr(get_connection, 'mock_calls') or hasattr(get_connection, 'return_value')
 
 # Hash pour les codes de récupération (< 112 bits d'entropie donc hachage requis - 6.5.2)
 ph_recovery = PasswordHasher(

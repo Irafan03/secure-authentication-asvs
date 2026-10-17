@@ -4,27 +4,50 @@ ASVS 5.0.0 Niveau 2
 """
 
 from datetime import timedelta
+from pathlib import Path
 
 # =============================================================================
 # ASVS V6.2 - Paramètres de mot de passe
 # =============================================================================
 
-# 6.2.1 : Longueur minimale 
+# 6.2.1 : Longueur minimale (≥ 8 requis, 15 recommandé — on retient 12)
 PASSWORD_MIN_LENGTH = 12
 
-# 6.2.9 : Longueur maximale (64+ requis)
+# 6.2.9 : Longueur maximale (64+ requis par ASVS, on autorise 128)
 PASSWORD_MAX_LENGTH = 128
 
-# 6.2.11 : Mots contextuels interdits (nom projet, organisation, etc.)
-CONTEXTUAL_WORDS = [
-    "secure", "authentication", "asvs", "auth", "login",
-    "secureauth", "secureauthentication", "mycompany", "myapp"
-]
+# 6.2.11 : Mots contextuels interdits — chargés depuis un fichier documenté
+# Le fichier contextual_words.txt contient un mot par ligne, commentaires (#) ignorés.
+# La comparaison est insensible à la casse (substring match).
+_CONTEXTUAL_WORDS_FILE = Path(__file__).parent / "contextual_words.txt"
+
+
+def _load_contextual_words() -> list:
+    """Charge les mots contextuels depuis le fichier documenté."""
+    words = []
+    try:
+        with open(_CONTEXTUAL_WORDS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    words.append(line.lower())
+    except FileNotFoundError:
+        # Fallback minimal si le fichier est absent
+        words = ["secureauth", "asvs", "authentication", "login"]
+    return words
+
+
+CONTEXTUAL_WORDS = _load_contextual_words()
 
 # 6.2.4/6.2.12 : Configuration vérification mots de passe compromis
 HIBP_API_TIMEOUT = 2.0  # Timeout court pour l'API HIBP (secondes)
 HIBP_ENABLED = True  # Activer la vérification HIBP
-HIBP_FAIL_OPEN = True  # Si API indisponible, autoriser (True) ou refuser (False)
+# 6.2.12 : Comportement si l'API HIBP est indisponible (timeout, erreur réseau, etc.)
+# True  = fail-open : le mot de passe est accepté, mais l'événement est journalisé.
+#         Les autres contrôles (liste locale, mots contextuels) continuent de s'appliquer.
+# False = fail-closed : le mot de passe est refusé.
+# Choix retenu : fail-open pour ne pas bloquer l'inscription si l'API est down.
+HIBP_FAIL_OPEN = True
 LOCAL_COMMON_PASSWORDS_MIN = 3000  # Nombre minimum de mots de passe dans la liste locale
 
 # =============================================================================
