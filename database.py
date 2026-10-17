@@ -67,15 +67,17 @@ SCHEMA_SQL = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 
-    # Table des tentatives de connexion (rate limiting)
+    # Table des tentatives de connexion (rate limiting multi-niveaux)
     """
     CREATE TABLE IF NOT EXISTS login_attempts (
         id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        identifier  VARCHAR(255) NOT NULL,          -- username ou IP
+        identifier  VARCHAR(255) NOT NULL,          -- IP, username, ou user:IP
+        identifier_type ENUM('ip', 'username', 'user_ip') NOT NULL DEFAULT 'username',
         attempted_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
         success     TINYINT(1)   NOT NULL DEFAULT 0,
         ip_address  VARCHAR(45),
-        INDEX idx_identifier_time (identifier, attempted_at)
+        INDEX idx_identifier_type_time (identifier, identifier_type, attempted_at),
+        INDEX idx_ip_time (ip_address, attempted_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """,
 
@@ -87,10 +89,58 @@ SCHEMA_SQL = [
         created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
         expires_at     DATETIME     NOT NULL,
         invalidated    TINYINT(1)   NOT NULL DEFAULT 0,
+        mfa_verified   TINYINT(1)   NOT NULL DEFAULT 0,
         ip_address     VARCHAR(45),
         CONSTRAINT fk_session_user FOREIGN KEY (user_id)
             REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    # Table des secrets TOTP (MFA)
+    """
+    CREATE TABLE IF NOT EXISTS mfa_secrets (
+        user_id       INT UNSIGNED NOT NULL PRIMARY KEY,
+        totp_secret   VARCHAR(255) NOT NULL,
+        validated     TINYINT(1)   NOT NULL DEFAULT 0,
+        validated_at  DATETIME,
+        created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_mfa_user FOREIGN KEY (user_id)
+            REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    # Table des codes de récupération MFA (hachés)
+    """
+    CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+        id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        user_id    INT UNSIGNED NOT NULL,
+        code_hash  VARCHAR(255) NOT NULL,
+        used       TINYINT(1)   NOT NULL DEFAULT 0,
+        used_at    DATETIME,
+        created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_recovery_user FOREIGN KEY (user_id)
+            REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_user_unused (user_id, used)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    # Table des codes TOTP utilisés (anti-rejeu)
+    """
+    CREATE TABLE IF NOT EXISTS totp_used_codes (
+        id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        user_id    INT UNSIGNED NOT NULL,
+        code_hash  CHAR(64)     NOT NULL,
+        used_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_totp_user FOREIGN KEY (user_id)
+            REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_user_code_time (user_id, code_hash, used_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """,
+
+    # Ajouter la colonne mfa_enabled à la table users si elle n'existe pas
+    """
+    ALTER TABLE users 
+    ADD COLUMN IF NOT EXISTS mfa_enabled TINYINT(1) NOT NULL DEFAULT 0;
     """,
 ]
 
