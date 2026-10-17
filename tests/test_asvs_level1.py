@@ -38,25 +38,25 @@ def cleanup_test_data():
 
 def test_6_2_1_password_min_12_chars():
     # 12 caractères exactement
-    result = validate_password("azertyuiop12")
+    result = validate_password("xK9mP2nQ7wRt")
     assert result["valid"], f"Un mot de passe de 12 caractères devrait être accepté. Erreurs: {result['errors']}"
     
     # 11 caractères refusé
-    result = validate_password("azertyuiop1")
+    result = validate_password("xK9mP2nQ7wR")
     assert not result["valid"], "Un mot de passe de 11 caractères devrait être refusé"
     assert any("12 caractères" in err for err in result["errors"])
 
 
 def test_6_2_1_password_64_chars():
     """ASVS 6.2.1: Mot de passe de 64 caractères accepté."""
-    password_64 = "a" * 64
+    password_64 = "xK9mP2nQ7wRt" * 5 + "xK9m"
     result = validate_password(password_64)
     assert result["valid"], f"Un mot de passe de 64 caractères devrait être accepté. Erreurs: {result['errors']}"
 
 
 def test_6_2_1_password_128_chars():
     """ASVS 6.2.1: Mot de passe de 128 caractères accepté (limite max)."""
-    password_128 = "a" * 128
+    password_128 = "xK9mP2nQ7wRt" * 10 + "xK9mP2nQ"
     result = validate_password(password_128)
     assert result["valid"], f"Un mot de passe de 128 caractères devrait être accepté. Erreurs: {result['errors']}"
 
@@ -72,12 +72,12 @@ def test_6_2_2_password_max_128_chars():
 def test_6_2_5_no_composition_rules():
     """ASVS 6.2.5: Pas de règles de composition - mot de passe sans majuscule accepté."""
     # Mot de passe sans majuscule (seulement minuscules)
-    password_no_upper = "azertyuiopqsdfgh"
+    password_no_upper = "hjklzxcvbnmqwe"
     result = validate_password(password_no_upper)
     assert result["valid"], f"Un mot de passe sans majuscule devrait être accepté (pas de règles de composition). Erreurs: {result['errors']}"
     
     # Mot de passe sans symbole (seulement lettres)
-    password_no_symbol = "azertyuiopqsdfgh"
+    password_no_symbol = "hjklzxcvbnmqwe"
     result = validate_password(password_no_symbol)
     assert result["valid"], f"Un mot de passe sans symbole devrait être accepté. Erreurs: {result['errors']}"
 
@@ -111,7 +111,7 @@ def test_6_3_1_rate_limiting_by_ip():
     ip = "192.168.1.100"
     
     # Créer un utilisateur de test
-    result = register_user(username, f"{username}@test.com", "ValidPassword123")
+    result = register_user(username, f"{username}@test.com", "RandomPass9988#1")
     assert result["success"], f"Échec création utilisateur: {result.get('errors')}"
     
     # Simuler plusieurs tentatives échouées depuis la même IP
@@ -130,7 +130,7 @@ def test_6_3_1_rate_limiting_no_account_lockout_dos():
     attacker_ip = "192.168.1.201"
     
     # Créer un utilisateur de test
-    result = register_user(username, f"{username}@test.com", "ValidPassword456")
+    result = register_user(username, f"{username}@test.com", "RandomPass9988#2")
     assert result["success"], f"Échec création utilisateur: {result.get('errors')}"
     
     # Un attaquant depuis une IP différente fait plusieurs tentatives
@@ -150,7 +150,7 @@ def test_6_3_1_progressive_delay():
     ip = "192.168.1.202"
     
     # Créer un utilisateur
-    result = register_user(username, f"{username}@test.com", "ValidPassword789")
+    result = register_user(username, f"{username}@test.com", "RandomPass9988#3")
     assert result["success"]
     
     # Première tentative échouée
@@ -172,7 +172,7 @@ def test_6_3_8_timing_attack_protection():
     
     # Créer un utilisateur
     username_exists = "testuser_timing_exists"
-    result = register_user(username_exists, f"{username_exists}@test.com", "ValidPassword000")
+    result = register_user(username_exists, f"{username_exists}@test.com", "RandomPass9988#4")
     assert result["success"]
     
     # Mesurer le temps pour un utilisateur existant
@@ -197,7 +197,7 @@ def test_6_3_8_generic_error_messages():
     
     # Créer un utilisateur
     username = "testuser_messages"
-    result = register_user(username, f"{username}@test.com", "ValidPassword111")
+    result = register_user(username, f"{username}@test.com", "RandomPass9988#5")
     assert result["success"]
     
     # Tester avec utilisateur inexistant

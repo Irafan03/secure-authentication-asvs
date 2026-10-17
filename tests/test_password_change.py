@@ -39,10 +39,10 @@ class TestPasswordChangeValidation:
             assert result["success"] is False
             assert any("12 caractères" in error for error in result["errors"])
             
-            # Test avec nouveau mot de passe pas assez complexe
-            result = change_password(1, current_password, "simplepassword")
+            # Test avec nouveau mot de passe contenant un mot contextuel (ASVS 6.2.11)
+            result = change_password(1, current_password, "MySecurePassword123")
             assert result["success"] is False
-            assert any("types de caractères" in error for error in result["errors"])
+            assert any("contexte de l'application" in error for error in result["errors"])
             
             # Test avec mot de passe courant
             result = change_password(1, current_password, "password123456789")
@@ -81,7 +81,7 @@ class TestPasswordChangeScenarios:
         mock_cursor.fetchone.return_value = ("testuser", current_hash)
         
         # Nouveau mot de passe valide et différent
-        new_password = "NewSecurePass456@"
+        new_password = "NewComplexPass456@"
         result = change_password(1, current_password, new_password)
         
         assert result["success"] is True

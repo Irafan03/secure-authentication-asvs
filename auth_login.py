@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple
 from auth_register import verify_password, get_user_by_username, ph
 from database import get_connection
+from models import get_db_session, LoginAttempt, Session as DbSession, User
+from sqlalchemy import func, or_
 from config import (
     RATE_LIMIT_IP_MAX_ATTEMPTS, RATE_LIMIT_IP_WINDOW, RATE_LIMIT_IP_LOCKOUT,
     RATE_LIMIT_USER_IP_MAX_ATTEMPTS, RATE_LIMIT_USER_IP_WINDOW, RATE_LIMIT_USER_IP_LOCKOUT,
@@ -19,7 +21,6 @@ from config import (
     SESSION_DURATION, SESSION_TOKEN_LENGTH, LOGIN_ATTEMPTS_RETENTION,
     DUMMY_PASSWORD_HASH
 )
-import mysql.connector
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def generate_session_token() -> str:
 
 def record_login_attempt(username: str, ip_address: str, success: bool) -> None:
     """
-    Enregistre une tentative de connexion pour le rate limiting.
+    Enregistre une tentative de connexion pour le rate limiting via l'ORM.
     
     ASVS 6.3.1: Enregistre séparément par IP, par (username, IP) et par username
     pour permettre des seuils différents.
@@ -63,36 +64,46 @@ def record_login_attempt(username: str, ip_address: str, success: bool) -> None:
         success: True si la connexion a réussi
     """
     try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            
+        session = get_db_session()
+        try:
             # Enregistrement par IP
-            cursor.execute(
-                "INSERT INTO login_attempts (identifier, success, ip_address, identifier_type) VALUES (%s, %s, %s, %s)",
-                (ip_address, success, ip_address, 'ip')
-            )
+            session.add(LoginAttempt(
+                identifier=ip_address,
+                success=success,
+                ip_address=ip_address,
+                identifier_type='ip'
+            ))
             
             # Enregistrement par (username, IP) si username fourni
             if username:
                 user_ip_identifier = f"{username}:{ip_address}"
-                cursor.execute(
-                    "INSERT INTO login_attempts (identifier, success, ip_address, identifier_type) VALUES (%s, %s, %s, %s)",
-                    (user_ip_identifier, success, ip_address, 'user_ip')
-                )
+                session.add(LoginAttempt(
+                    identifier=user_ip_identifier,
+                    success=success,
+                    ip_address=ip_address,
+                    identifier_type='user_ip'
+                ))
                 
                 # Enregistrement par username seul
-                cursor.execute(
-                    "INSERT INTO login_attempts (identifier, success, ip_address, identifier_type) VALUES (%s, %s, %s, %s)",
-                    (username, success, ip_address, 'username')
-                )
+                session.add(LoginAttempt(
+                    identifier=username,
+                    success=success,
+                    ip_address=ip_address,
+                    identifier_type='username'
+                ))
             
-            conn.commit()
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
     except Exception as e:
         logger.error(f"Erreur lors de l'enregistrement de la tentative de connexion: {e}")
 
 def check_rate_limit(username: str, ip_address: str) -> Dict[str, Any]:
     """
-    Vérifie le rate limiting selon ASVS 6.3.1.
+    Vérifie le rate limiting selon ASVS 6.3.1 (via ORM).
     
     Trois niveaux de protection:
     1. Par IP: empêche les attaques distribuées depuis une même IP
@@ -104,31 +115,27 @@ def check_rate_limit(username: str, ip_address: str) -> Dict[str, Any]:
         ip_address: Adresse IP du client
         
     Returns:
-        Dict avec:
-        - 'allowed': True si la connexion est autorisée
-        - 'reason': Raison du blocage si 'allowed' est False
-        - 'delay': Délai à appliquer avant traitement (secondes)
-        - 'unlock_time': Heure de déblocage si bloqué
+        Dict avec 'allowed', 'reason', 'delay', 'unlock_time'
     """
     try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
+        session = get_db_session()
+        try:
             current_time = datetime.now()
             
             # 1. Vérifier rate limit par IP
             ip_cutoff = current_time - RATE_LIMIT_IP_WINDOW
-            cursor.execute("""
-                SELECT COUNT(*) as failed_count, MAX(attempted_at) as last_attempt
-                FROM login_attempts 
-                WHERE identifier = %s 
-                  AND identifier_type = 'ip'
-                  AND attempted_at > %s 
-                  AND success = 0
-            """, (ip_address, ip_cutoff))
+            ip_res = session.query(
+                func.count(LoginAttempt.id),
+                func.max(LoginAttempt.attempted_at)
+            ).filter(
+                LoginAttempt.identifier == ip_address,
+                LoginAttempt.identifier_type == 'ip',
+                LoginAttempt.attempted_at > ip_cutoff,
+                LoginAttempt.success == False
+            ).first()
             
-            result = cursor.fetchone()
-            ip_failed_attempts = result[0] if result else 0
-            ip_last_attempt = result[1] if result and result[1] else None
+            ip_failed_attempts = ip_res[0] if ip_res and ip_res[0] else 0
+            ip_last_attempt = ip_res[1] if ip_res and ip_res[1] else None
             
             if ip_failed_attempts >= RATE_LIMIT_IP_MAX_ATTEMPTS and ip_last_attempt:
                 unlock_time = ip_last_attempt + RATE_LIMIT_IP_LOCKOUT
@@ -143,18 +150,18 @@ def check_rate_limit(username: str, ip_address: str) -> Dict[str, Any]:
             # 2. Vérifier rate limit par (username, IP)
             user_ip_identifier = f"{username}:{ip_address}"
             user_ip_cutoff = current_time - RATE_LIMIT_USER_IP_WINDOW
-            cursor.execute("""
-                SELECT COUNT(*) as failed_count, MAX(attempted_at) as last_attempt
-                FROM login_attempts 
-                WHERE identifier = %s 
-                  AND identifier_type = 'user_ip'
-                  AND attempted_at > %s 
-                  AND success = 0
-            """, (user_ip_identifier, user_ip_cutoff))
+            user_ip_res = session.query(
+                func.count(LoginAttempt.id),
+                func.max(LoginAttempt.attempted_at)
+            ).filter(
+                LoginAttempt.identifier == user_ip_identifier,
+                LoginAttempt.identifier_type == 'user_ip',
+                LoginAttempt.attempted_at > user_ip_cutoff,
+                LoginAttempt.success == False
+            ).first()
             
-            result = cursor.fetchone()
-            user_ip_failed_attempts = result[0] if result else 0
-            user_ip_last_attempt = result[1] if result and result[1] else None
+            user_ip_failed_attempts = user_ip_res[0] if user_ip_res and user_ip_res[0] else 0
+            user_ip_last_attempt = user_ip_res[1] if user_ip_res and user_ip_res[1] else None
             
             if user_ip_failed_attempts >= RATE_LIMIT_USER_IP_MAX_ATTEMPTS and user_ip_last_attempt:
                 unlock_time = user_ip_last_attempt + RATE_LIMIT_USER_IP_LOCKOUT
@@ -168,17 +175,14 @@ def check_rate_limit(username: str, ip_address: str) -> Dict[str, Any]:
             
             # 3. Vérifier rate limit par username (seuil élevé + délai progressif)
             username_cutoff = current_time - RATE_LIMIT_USERNAME_WINDOW
-            cursor.execute("""
-                SELECT COUNT(*) as failed_count
-                FROM login_attempts 
-                WHERE identifier = %s 
-                  AND identifier_type = 'username'
-                  AND attempted_at > %s 
-                  AND success = 0
-            """, (username, username_cutoff))
-            
-            result = cursor.fetchone()
-            username_failed_attempts = result[0] if result else 0
+            username_failed_attempts = session.query(
+                func.count(LoginAttempt.id)
+            ).filter(
+                LoginAttempt.identifier == username,
+                LoginAttempt.identifier_type == 'username',
+                LoginAttempt.attempted_at > username_cutoff,
+                LoginAttempt.success == False
+            ).scalar() or 0
             
             # Calculer le délai progressif si activé
             delay = 0
@@ -203,6 +207,8 @@ def check_rate_limit(username: str, ip_address: str) -> Dict[str, Any]:
                 'unlock_time': None,
                 'delay': delay
             }
+        finally:
+            session.close()
             
     except Exception as e:
         logger.error(f"Erreur lors de la vérification du rate limit: {e}")
@@ -210,29 +216,29 @@ def check_rate_limit(username: str, ip_address: str) -> Dict[str, Any]:
         return {'allowed': True, 'reason': None, 'unlock_time': None, 'delay': 0}
 
 def cleanup_old_attempts() -> None:
-    """Nettoie les anciennes tentatives de connexion."""
+    """Nettoie les anciennes tentatives de connexion (via ORM)."""
     try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
+        session = get_db_session()
+        try:
             cutoff_time = datetime.now() - LOGIN_ATTEMPTS_RETENTION
-            
-            cursor.execute(
-                "DELETE FROM login_attempts WHERE attempted_at < %s",
-                (cutoff_time,)
-            )
-            
-            deleted_count = cursor.rowcount
-            conn.commit()
+            deleted_count = session.query(LoginAttempt).filter(
+                LoginAttempt.attempted_at < cutoff_time
+            ).delete()
+            session.commit()
             
             if deleted_count > 0:
                 logger.info(f"Nettoyé {deleted_count} anciennes tentatives de connexion")
-                
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
     except Exception as e:
         logger.error(f"Erreur lors du nettoyage des tentatives: {e}")
 
 def create_session(user_id: int, ip_address: str = None, mfa_verified: bool = False) -> str:
     """
-    Crée une nouvelle session pour un utilisateur.
+    Crée une nouvelle session pour un utilisateur (via ORM).
     
     ASVS 6.3.3, 6.5.1: Le MFA doit être vérifié avant l'émission de la session.
     
@@ -251,26 +257,33 @@ def create_session(user_id: int, ip_address: str = None, mfa_verified: bool = Fa
         session_token = generate_session_token()
         expires_at = datetime.now() + SESSION_DURATION
         
-        with get_connection() as conn:
-            cursor = conn.cursor()
+        session = get_db_session()
+        try:
+            new_session = DbSession(
+                session_token=session_token,
+                user_id=user_id,
+                expires_at=expires_at,
+                ip_address=ip_address,
+                mfa_verified=mfa_verified
+            )
+            session.add(new_session)
+            session.commit()
             
-            cursor.execute("""
-                INSERT INTO sessions (session_token, user_id, expires_at, ip_address, mfa_verified)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (session_token, user_id, expires_at, ip_address, mfa_verified))
+            logger.info(f"Session créée pour l'utilisateur ID {user_id} (MFA: {mfa_verified})")
+            return session_token
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
             
-            conn.commit()
-            
-        logger.info(f"Session créée pour l'utilisateur ID {user_id} (MFA: {mfa_verified})")
-        return session_token
-        
     except Exception as e:
         logger.error(f"Erreur lors de la création de session pour l'utilisateur {user_id}: {e}")
         raise AuthenticationError("Erreur lors de la création de session")
 
 def validate_session(session_token: str) -> Optional[Dict[str, Any]]:
     """
-    Valide un token de session.
+    Valide un token de session (via ORM).
     
     Args:
         session_token: Le token de session à valider
@@ -279,28 +292,37 @@ def validate_session(session_token: str) -> Optional[Dict[str, Any]]:
         Dict avec les informations de l'utilisateur si valide, None sinon
     """
     try:
-        with get_connection() as conn:
-            cursor = conn.cursor(dictionary=True)
+        session = get_db_session()
+        try:
+            row = session.query(DbSession, User).join(
+                User, DbSession.user_id == User.id
+            ).filter(
+                DbSession.session_token == session_token,
+                DbSession.expires_at > datetime.now(),
+                DbSession.invalidated == False,
+                User.is_active == True
+            ).first()
             
-            cursor.execute("""
-                SELECT s.user_id, s.created_at, s.expires_at, s.ip_address, s.mfa_verified,
-                       u.username, u.email, u.is_active, u.role, u.mfa_enabled
-                FROM sessions s
-                JOIN users u ON s.user_id = u.id
-                WHERE s.session_token = %s 
-                  AND s.expires_at > NOW()
-                  AND s.invalidated = 0
-                  AND u.is_active = 1
-            """, (session_token,))
-            
-            session_data = cursor.fetchone()
-            
-            if session_data:
-                logger.debug(f"Session valide pour l'utilisateur {session_data['username']}")
-                return session_data
+            if row:
+                s, u = row
+                logger.debug(f"Session valide pour l'utilisateur {u.username}")
+                return {
+                    "user_id": s.user_id,
+                    "created_at": s.created_at,
+                    "expires_at": s.expires_at,
+                    "ip_address": s.ip_address,
+                    "mfa_verified": s.mfa_verified,
+                    "username": u.username,
+                    "email": u.email,
+                    "is_active": u.is_active,
+                    "role": u.role,
+                    "mfa_enabled": getattr(u, 'mfa_enabled', False)
+                }
             else:
                 logger.debug(f"Session invalide ou expirée: {session_token}")
                 return None
+        finally:
+            session.close()
                 
     except Exception as e:
         logger.error(f"Erreur lors de la validation de session: {e}")
@@ -308,7 +330,7 @@ def validate_session(session_token: str) -> Optional[Dict[str, Any]]:
 
 def invalidate_session(session_token: str) -> bool:
     """
-    Invalide une session (déconnexion).
+    Invalide une session (déconnexion) via ORM.
     
     Args:
         session_token: Le token de session à invalider
@@ -317,44 +339,45 @@ def invalidate_session(session_token: str) -> bool:
         True si la session a été invalidée avec succès
     """
     try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                UPDATE sessions 
-                SET invalidated = 1 
-                WHERE session_token = %s
-            """, (session_token,))
-            
-            conn.commit()
-            
-            if cursor.rowcount > 0:
+        session = get_db_session()
+        try:
+            sess = session.query(DbSession).filter(DbSession.session_token == session_token).first()
+            if sess:
+                sess.invalidated = True
+                session.commit()
                 logger.info(f"Session invalidée: {session_token}")
                 return True
             else:
                 logger.warning(f"Tentative d'invalidation d'une session inexistante: {session_token}")
                 return False
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
                 
     except Exception as e:
         logger.error(f"Erreur lors de l'invalidation de session: {e}")
         return False
 
 def cleanup_expired_sessions() -> None:
-    """Nettoie les sessions expirées."""
+    """Nettoie les sessions expirées (via ORM)."""
     try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                DELETE FROM sessions 
-                WHERE expires_at < NOW() OR invalidated = 1
-            """)
-            
-            deleted_count = cursor.rowcount
-            conn.commit()
+        session = get_db_session()
+        try:
+            now = datetime.now()
+            deleted_count = session.query(DbSession).filter(
+                or_(DbSession.expires_at < now, DbSession.invalidated == True)
+            ).delete()
+            session.commit()
             
             if deleted_count > 0:
                 logger.info(f"Nettoyé {deleted_count} sessions expirées")
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
                 
     except Exception as e:
         logger.error(f"Erreur lors du nettoyage des sessions: {e}")
@@ -528,19 +551,24 @@ def get_login_attempts_history(identifier: str, hours: int = 24) -> list:
         Liste des tentatives de connexion
     """
     try:
-        with get_connection() as conn:
-            cursor = conn.cursor(dictionary=True)
-            
+        session = get_db_session()
+        try:
             cutoff_time = datetime.now() - timedelta(hours=hours)
+            attempts = session.query(LoginAttempt).filter(
+                LoginAttempt.identifier == identifier,
+                LoginAttempt.attempted_at > cutoff_time
+            ).order_by(LoginAttempt.attempted_at.desc()).all()
             
-            cursor.execute("""
-                SELECT attempted_at, success, ip_address
-                FROM login_attempts
-                WHERE identifier = %s AND attempted_at > %s
-                ORDER BY attempted_at DESC
-            """, (identifier, cutoff_time))
-            
-            return cursor.fetchall()
+            return [
+                {
+                    "attempted_at": a.attempted_at,
+                    "success": a.success,
+                    "ip_address": a.ip_address
+                }
+                for a in attempts
+            ]
+        finally:
+            session.close()
             
     except Exception as e:
         logger.error(f"Erreur lors de la récupération de l'historique: {e}")
