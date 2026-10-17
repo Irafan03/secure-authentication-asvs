@@ -69,7 +69,7 @@ cp .env.example .env
 source .env
 
 # 4. Lancer l'application
-python3 app.py
+python3 -m backend.app
 
 # L'application sera disponible sur http://localhost:5000
 ```
@@ -109,7 +109,7 @@ export DB_NAME=secure_auth
 ### Initialisation du schéma
 
 ```python
-from database import init_db
+from backend.database import init_db
 
 # Créer les tables
 init_db()
@@ -120,7 +120,7 @@ init_db()
 ### Inscription d'un utilisateur
 
 ```python
-from auth_register import register_user
+from backend.auth_register import register_user
 
 result = register_user(
     username="johndoe",
@@ -138,7 +138,7 @@ else:
 ### Authentification
 
 ```python
-from auth_login import authenticate_user
+from backend.auth_login import authenticate_user
 
 result = authenticate_user(
     username="johndoe",
@@ -158,7 +158,7 @@ else:
 ### Enrôlement MFA
 
 ```python
-from auth_mfa import enroll_mfa, validate_mfa_enrollment
+from backend.auth_mfa import enroll_mfa, validate_mfa_enrollment
 
 # Enrôler l'utilisateur dans le MFA
 result = enroll_mfa(user_id, username="johndoe")
@@ -218,7 +218,7 @@ pytest --cov=. --cov-report=html
 
 ## 🔧 Configuration avancée
 
-Tous les paramètres de sécurité sont centralisés dans `config.py` :
+Tous les paramètres de sécurité sont centralisés dans `backend/config.py` :
 
 ```python
 # Mots de passe

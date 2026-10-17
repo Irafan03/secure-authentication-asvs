@@ -12,7 +12,7 @@ from datetime import datetime
 # Ajouter le répertoire parent au path pour les imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from auth_register import (
+from backend.auth_register import (
     change_password, hash_password, verify_password,
     validate_password, get_user_by_id
 )

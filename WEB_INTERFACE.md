@@ -9,7 +9,8 @@ L'interface web Flask permet de tester et démontrer toutes les fonctionnalités
 ### Structure des fichiers
 
 ```
-├── app.py                      # Application Flask principale
+├── backend/                    # Package Python du backend
+│   └── backend/app.py                  # Application Flask principale
 ├── templates/                  # Templates Jinja2
 │   ├── base.html              # Layout de base (Bootstrap 5, design gradient)
 │   ├── index.html             # Page d'accueil
@@ -404,7 +405,7 @@ def test_login_with_mfa(client):
 
 ### Environnement de développement
 ```bash
-python3 app.py
+python3 -m backend.app
 # http://localhost:5000
 ```
 
@@ -412,7 +413,7 @@ python3 app.py
 
 #### Avec Gunicorn
 ```bash
-gunicorn -w 4 -b 0.0.0.0:8000 app:app
+gunicorn -w 4 -b 0.0.0.0:8000 backend.app:app
 ```
 
 #### Avec Docker
@@ -422,7 +423,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8000", "app:app"]
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8000", "backend.app:app"]
 ```
 
 #### Reverse proxy Nginx
@@ -445,7 +446,7 @@ server {
 
 ### Logs
 ```python
-# app.py configure le logging
+# backend/app.py configure le logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

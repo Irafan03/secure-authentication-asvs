@@ -29,11 +29,12 @@
 
 ```
 secure-authentication-asvs/
-├── auth_register.py       # Inscription + validation mots de passe
-├── auth_login.py          # Authentification + rate limiting
-├── auth_mfa.py            # MFA TOTP + codes récupération
-├── config.py              # Configuration centralisée
-├── database.py            # Schéma BDD (6 tables)
+├── backend/auth_register.py       # Inscription + validation mots de passe
+├── backend/auth_login.py          # Authentification + rate limiting
+├── backend/auth_mfa.py            # MFA TOTP + codes récupération
+├── backend/               # Package Python du backend
+│   ├── backend/config.py          # Configuration centralisée
+│   └── backend/database.py        # Schéma BDD (6 tables)
 ├── requirements.txt       # Dépendances
 ├── README.md              # Documentation utilisateur
 │
@@ -156,14 +157,14 @@ export DB_NAME=secure_auth
 
 ### Initialisation
 ```python
-from database import init_db
+from backend.database import init_db
 init_db()
 ```
 
 ### Utilisation
 ```python
-from auth_register import register_user
-from auth_login import authenticate_user
+from backend.auth_register import register_user
+from backend.auth_login import authenticate_user
 
 # Inscription
 result = register_user("john", "john@example.com", "SecurePass123")

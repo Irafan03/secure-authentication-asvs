@@ -4,9 +4,9 @@ test_asvs_level1.py — Tests de conformité ASVS 5.0.0 V6 Niveau 1
 
 import pytest
 import time
-from auth_register import validate_password, register_user, check_password_pwned
-from auth_login import authenticate_user, check_rate_limit
-from database import init_db, get_connection
+from backend.auth_register import validate_password, register_user, check_password_pwned
+from backend.auth_login import authenticate_user, check_rate_limit
+from backend.database import init_db, get_connection
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -218,7 +218,7 @@ def test_6_3_8_generic_error_messages():
 def test_6_4_2_no_password_reset():
     """ASVS 6.4.2: Pas de fonction de reset de mot de passe (Non applicable)."""
     # Ce test vérifie simplement que la fonction n'existe pas
-    import auth_login
+    import backend.auth_login
     assert not hasattr(auth_login, 'reset_password'), \
         "Pas de fonction reset_password (marquée Non applicable)"
 

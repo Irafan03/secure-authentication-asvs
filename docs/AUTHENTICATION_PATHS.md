@@ -1,70 +1,134 @@
-# Voies d'Authentification (Authentication Paths)
-# ASVS 5.0.0 — V6.3.4 & V6.1.3 (Niveau 2)
+# Voies d'Authentification (Authentication Paths) & Sécurité ASVS 5.0.0 V6.3 / V6.4
+# ASVS 5.0.0 — V6.3 et V6.4 (récupération et cycle de vie)
 
-Ce document répertorie et documente l'ensemble des voies et points d'entrée d'authentification disponibles dans l'application, conformément aux exigences ASVS 5.0.0 V6.3.4 et V6.1.3.
+Ce document répertorie et documente l'ensemble des voies d'authentification disponibles dans l'application, les mécanismes de protection contre les attaques par force brute (6.3.1), l'absence de comptes par défaut (6.3.2), la gestion du second facteur TOTP (6.3.3), les alertes de sécurité (6.3.5 & 6.3.7), la non-utilisation de l'e-mail comme facteur (6.3.6) et les mécanismes anti-énumération (6.3.8).
 
 ---
 
 ## 1. Vue d'ensemble des flux d'authentification
 
 L'application expose les mécanismes d'authentification suivants :
-1. **Création de compte / Inscription** (`auth_register.py`)
-2. **Authentification principale / Connexion** (`auth_login.py`)
-3. **Double facteur d'authentification / MFA TOTP** (`auth_mfa.py`)
-4. **Changement de mot de passe** (`auth_register.py`)
+1. **Inscription de compte** (`backend/auth_register.py:register_user`)
+2. **Authentification principale** (`backend/auth_login.py:authenticate_user`)
+3. **Double facteur d'authentification (MFA TOTP)** (`backend/auth_mfa.py:verify_totp_code`, `verify_recovery_code`)
+4. **Mise à jour des identifiants** (`backend/auth_register.py:change_password`, `change_email`, `change_username`)
+5. **Initialisation du compte administrateur** (`backend/create_admin.py:create_admin`)
+6. **Demande de réinitialisation du mot de passe** (`POST /password-reset`)
+7. **Finalisation de réinitialisation** (`POST /password-reset/confirm`)
+8. **Réinitialisation déclenchée par admin** (`POST /admin/users/<user_id>/password-reset`)
+9. **Récupération MFA** (`POST /mfa/recovery/request`, puis `/mfa/recovery/confirm`)
 
-Toutes les voies respectent les contrôles de sécurité :
-- Pas de règles de composition arbitraires (ASVS 6.2.5).
-- Longueur minimale de 12 caractères et maximale de 128 caractères (ASVS 6.2.1, 6.2.2).
-- Vérification contre les mots de passe compromis (liste locale et HIBP k-anonymity) (ASVS 6.2.4, 6.2.12).
-- Rejet des mots contextuels liés à l'application (ASVS 6.2.11).
-- Hachage résistant via Argon2id (ASVS 2.4).
-- Protection contre les attaques par force brute (délai progressif et rate limiting sans verrouillage DoS) (ASVS 6.3.1).
-- Messages d'erreur génériques pour prévenir l'énumération (ASVS 6.3.8).
+Toutes les voies d'accès à la base de données s'exécutent exclusivement via l'ORM SQLAlchemy (`backend/models.py`), sans aucune requête SQL brute.
 
 ---
 
-## 2. Inventaire des points d'entrée
+## 2. Inventaire des points d'entrée et contrôles associés
 
 ### 2.1 Inscription (`/register` - POST)
 - **Fonction métier** : `auth_register.register_user(username, email, password)`
 - **Paramètres requis** : `username` (alphanumérique + `_`, 3-30 car.), `email` (conforme RFC), `password` (12-128 car.).
-- **Vérifications** :
+- **Vérifications de sécurité** :
   - Longueur (12 à 128 caractères).
   - Mot de passe != nom d'utilisateur.
-  - Absence de mots contextuels (`contextual_words.txt`).
-  - Absence du mot de passe dans la liste des mots de passe courants (`common_passwords.txt`).
-  - Vérification HIBP k-anonymity (`Add-Padding: true`).
-- **Erreurs** : Message générique unifié si utilisateur ou email déjà existant (`Ce nom d'utilisateur ou cette adresse email est déjà utilisé`).
+  - Absence de mots contextuels applicatifs (`backend/contextual_words.txt`).
+  - Absence du mot de passe dans la liste des mots de passe courants (`backend/common_passwords.txt`).
+  - Vérification HIBP k-anonymity avec padding.
+  - Hachage Argon2id (`t=3, m=65536, p=4`).
+- **Anti-énumération (6.3.8)** :
+  - Message unifié identique que le nom d'utilisateur ou l'email soit déjà utilisé : `"Ce nom d'utilisateur ou cette adresse email est déjà utilisé"`.
+  - En production avec canal d'email activé, schéma standard de confirmation neutre.
 
 ### 2.2 Connexion (`/login` - POST)
-- **Fonction métier** : `auth_login.login_user(identifier, password, ip_address)`
-- **Paramètres requis** : `identifier` (username ou email), `password`, `ip_address`.
-- **Mécanismes de protection** :
-  - Rate limiting basé sur l'adresse IP et l'identifiant.
-  - Délai progressif sans verrouillage de compte (anti-déni de service).
-  - Temps de réponse constant contre les attaques par canal auxiliaire (timing attacks).
-  - Si l'utilisateur a activé le 2FA, émission d'un token temporaire pour l'étape MFA.
+- **Fonction métier** : `auth_login.authenticate_user(username, password, ip_address, totp_code, recovery_code, user_agent)`
+- **Contrôles de sécurité (6.3.1, 6.3.8)** :
+  - **Rate Limiting multi-niveaux (6.3.1)** :
+    - *Par IP* : 20 tentatives max sur 15 min -> verrouillage de 30 min.
+    - *Par couple (username, IP)* : 5 tentatives max sur 10 min -> verrouillage de 15 min.
+    - *Par username seul* : seuil élevé (50 tentatives sur 1 heure) avec délai progressif (backoff) pour ralentir les attaques distribuées sans provoquer de déni de service (DoS) sur le compte légitime.
+    - *Seuls les échecs* sont comptabilisés.
+    - *Messages de blocage unifiés* : `"Trop de tentatives de connexion. Veuillez réessayer plus tard"` (identique que le compte existe ou non).
+  - **Protection Timing Attack (6.3.8)** :
+    - Si l'utilisateur n'existe pas ou est inactif, une vérification Argon2id factice (`_get_dummy_hash()`) est systématiquement exécutée avec les mêmes paramètres pour garantir un temps de réponse équivalent.
+    - Code HTTP et message d'erreur unifiés : `"Nom d'utilisateur ou mot de passe incorrect"`.
 
-### 2.3 Double facteur MFA TOTP (`/mfa/verify`, `/mfa/recovery` - POST)
+### 2.3 Double facteur MFA TOTP (RFC 6238)
 - **Fonctions métier** :
-  - Configuration : `auth_mfa.generate_totp_secret()`, `auth_mfa.get_totp_uri()`
-  - Vérification TOTP : `auth_mfa.verify_totp(user_id, code)` (fenêtre de validité stricte, anti-rejeu)
-  - Codes de secours : `auth_mfa.generate_recovery_codes()`, `auth_mfa.use_recovery_code(user_id, code)` (usage unique, hachés en base).
+  - Enrôlement : `auth_mfa.enroll_mfa(user_id, username)` -> secret CSPRNG 256 bits, QR Code standard.
+  - Validation de l'enrôlement : `auth_mfa.validate_mfa_enrollment(user_id, code)` -> validé par un premier code avant activation.
+  - Vérification TOTP : `auth_mfa.verify_totp_code(secret, code, user_id)` -> validité 30s, anti-rejeu strict via la table ORM `totp_used_codes`.
+  - Codes de secours : `auth_mfa.generate_recovery_codes()`, `auth_mfa.verify_recovery_code(user_id, code)` -> 10 codes uniques générés par CSPRNG, à usage unique, hachés avec sel via Argon2id (`MfaRecoveryCode`).
+- **Règles strictes (6.3.3, 6.3.6)** :
+  - Aucune session ou jeton n'est émis avant la validation réussie du TOTP ou du code de récupération.
+  - L'e-mail n'est **JAMAIS** utilisé comme facteur d'authentification (aucun code OTP par e-mail, aucun lien magique).
 
-### 2.4 Changement de mot de passe (`/change-password` - POST)
-- **Fonction métier** : `auth_register.change_password(user_id, current_password, new_password)`
-- **Paramètres requis** : `user_id`, `current_password`, `new_password`.
-- **Règles appliquées** :
-  - Vérification côté serveur du mot de passe actuel.
-  - Vérification que le nouveau mot de passe est différent de l'ancien.
-  - Validation complète du nouveau mot de passe (mêmes exigences qu'à l'inscription).
-  - Aucune exigence de réinitialisation périodique forcée (ASVS 6.4.2).
+### 2.4 Mise à jour des identifiants
+- **Changement de mot de passe** : `auth_register.change_password(user_id, current_password, new_password, ip_address)`
+  - Vérification obligatoire du mot de passe actuel côté serveur.
+  - Nouveau mot de passe soumis à toutes les validations ASVS 6.2 et différent de l'actuel.
+  - Soumis au même rate limiting que le login (protection contre la force brute du mot de passe actuel).
+  - Notification de sécurité immédiate envoyée à l'adresse e-mail de l'utilisateur (**sans mot de passe**).
+- **Changement d'adresse e-mail** : `auth_register.change_email(user_id, new_email, current_password, ip_address)`
+  - Vérification du mot de passe actuel.
+  - Validation du format du nouvel e-mail.
+  - Notification envoyée à l'**ancienne ET à la nouvelle adresse e-mail** (ASVS 6.3.7).
+- **Changement de nom d'utilisateur** : `auth_register.change_username(user_id, new_username, current_password, ip_address)`
+  - Notification envoyée à l'adresse e-mail de l'utilisateur.
+
+### 2.5 Création d'administrateur initial (`backend/create_admin.py`)
+- Commande CLI dédiée : `python backend/create_admin.py --username admin_ops --email admin@domain.com`
+- Aucun compte par défaut dans le code, les tests ou les migrations (ASVS 6.3.2).
+- Le mot de passe est saisi par l'opérateur et doit respecter tous les critères ASVS 6.2.
 
 ---
 
-## 3. Absence de voies alternatives non sécurisées
+## 3. Système d'alerte et de notification des tentatives suspectes (6.3.5 & 6.3.7)
 
-- Aucun compte ou mot de passe par défaut n'est pré-configuré (ASVS 6.3.2).
-- Aucune question secrète ni réinitialisation de mot de passe non sécurisée par email clair ou tokens faibles (ASVS 6.4.2).
-- Aucune API d'administration non documentée ou voie dérobée.
+L'application intègre une abstraction de notification (`backend/notifications.py:BaseNotificationService`) avec :
+- Une implémentation de production `EmailNotificationService` (SMTP avec STARTTLS / SSL).
+- Une implémentation de développement/journalisation `DevLogNotificationService`.
+
+### Déclencheurs d'alertes suspectes (6.3.5) :
+1. **Connexion depuis un nouvel appareil ou une nouvelle adresse IP** :
+   - Empreinte (IP + User-Agent) enregistrée dans la table ORM `user_devices`.
+   - Si l'IP ou l'appareil est inconnu pour cet utilisateur, une notification d'alerte est expédiée.
+2. **Connexion réussie après plusieurs échecs consécutifs** :
+   - Seuil configurable (`SUSPICIOUS_FAILED_ATTEMPTS_THRESHOLD = 3`).
+   - Alerte transmise à l'utilisateur indiquant l'adresse IP et le nombre de tentatives.
+3. **Authentification partiellement réussie (mot de passe correct, mais échec MFA)** :
+   - Alerte critique envoyée immédiatement à l'utilisateur pour l'avertir que son mot de passe est potentiellement compromis, bien que le MFA ait bloqué l'accès.
+4. **Reconnexion après longue inactivité** :
+   - Durée configurable (`LOGIN_INACTIVITY_THRESHOLD = timedelta(days=30)`).
+   - Horodatage suivi via `User.last_login_at`.
+
+### Propriétés de sécurité des notifications :
+- **Aucun secret exposé** : ni mot de passe en clair, ni secret TOTP, ni token de session.
+- **Fail-open sécurisé** : une indisponibilité temporaire du serveur SMTP est journalisée en erreur, mais ne bloque jamais l'accès de l'utilisateur légitime.
+- **Aucune fuite à un tiers** : alertes envoyées strictement à l'adresse du propriétaire du compte.
+
+---
+
+## 4. Configuration requise en production
+
+Pour activer l'envoi effectif d'e-mails en production, définir les variables d'environnement suivantes :
+```bash
+NOTIFICATION_BACKEND=email
+SMTP_HOST=smtp.votre-domaine.com
+SMTP_PORT=587
+SMTP_USER=votre_utilisateur_smtp
+SMTP_PASSWORD=votre_mot_de_passe_smtp
+SMTP_USE_TLS=true
+SMTP_USE_SSL=false
+NOTIFICATION_EMAIL_FROM=securite@votre-domaine.com
+```
+En l'absence de ces variables, le backend par défaut (`NOTIFICATION_BACKEND=dev`) journalise les notifications avec niveau WARNING dans les logs de l'application sans bloquer le système.
+
+## 5. Récupération des authentificateurs (ASVS V6.4)
+
+- Les comptes sont inscrits avec un mot de passe choisi par la personne ; aucun mot de passe initial n'est généré.
+- La demande de reset répond toujours avec le même message HTTP 200. Les jetons ont 256 bits aléatoires, sont stockés hachés, expirent après `PASSWORD_RESET_TOKEN_TTL` (20 minutes par défaut), sont à usage unique et remplacent les demandes précédentes.
+- La finalisation exige le TOTP ou un code de récupération lorsque MFA est actif, un nouveau mot de passe validé par `validate_password`, et invalide toutes les sessions.
+- La récupération MFA n'est accessible qu'à une session ayant déjà passé le MFA (le code de récupération sert à se connecter en cas de perte du TOTP), et demande aussi le mot de passe courant et un lien à usage unique envoyé à l'adresse enregistrée. Après confirmation, les anciens facteurs sont supprimés, les sessions invalidées et le prochain accès est limité au réenrôlement MFA.
+- Un administrateur peut uniquement déclencher le reset d'un compte via une route protégée côté serveur. Le jeton est transmis à l'utilisateur, jamais retourné à l'administrateur.
+- L'inscription courante prouve la possession de l'adresse e-mail et le choix d'un mot de passe. L'enrôlement MFA exige une session authentifiée par ces éléments ; la récupération MFA exige cette session (donc le MFA existant, TOTP ou code de récupération), puis mot de passe et boîte e-mail.
+
+En production, configurer `NOTIFICATION_BACKEND=email`, un SMTP avec STARTTLS/SSL et `PASSWORD_RESET_URL_BASE` / `APP_PUBLIC_BASE_URL` vers le domaine HTTPS public. Le backend `dev` journalise le contenu et n'expédie pas réellement le message ; les flux de récupération ne sont alors pas opérationnels pour les utilisateurs distants.
