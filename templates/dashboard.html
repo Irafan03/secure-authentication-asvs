@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}Tableau de bord{% endblock %}
+{% block content %}
+<section class="dashboard-page">
+  <div class="dashboard-welcome"><div><div class="eyebrow"><span class="status-pip"></span> ESPACE PERSONNEL</div><h1>Bonjour, <em>{{ user.username }}</em></h1><p>Voici l’état de sécurité de votre compte.</p></div><div class="account-avatar">{{ user.username[:1]|upper }}</div></div>
+  <div class="dashboard-grid">
+    <article class="dashboard-card account-card"><div class="card-topline"><span class="card-icon">◉</span><span class="pill pill-green">Compte actif</span></div><div class="eyebrow">VOTRE COMPTE</div><h2>{{ user.username }}</h2><p>{{ user.email }}</p><div class="account-details"><div><span>Rôle</span><b>{{ user.role|capitalize }}</b></div><div><span>Authentification multifacteur</span><b>{{ 'Activée' if user.mfa_enabled else 'À configurer' }}</b></div></div></article>
+    <article class="dashboard-card security-card"><div class="card-topline"><span class="card-icon">⌑</span><span class="pill pill-green">Session valide</span></div><div class="eyebrow">VOTRE SÉCURITÉ</div><h2>Votre compte est protégé.</h2><p>Ajoutez une seconde vérification pour renforcer votre connexion.</p><div class="security-actions">{% if not user.mfa_enabled %}<a class="button button-dark" href="{{ url_for('mfa_enroll') }}">Activer le MFA <span>→</span></a>{% else %}<span class="mfa-enabled">✓ Double authentification activée</span>{% endif %}</div></article>
+  </div>
+  <div class="section-heading dashboard-section-heading"><div><div class="eyebrow">GESTION DU COMPTE</div><h2>Gardez la main.</h2></div></div>
+  <div class="action-grid"><a class="action-card" href="{{ url_for('password_settings') }}"><span class="action-icon">⌑</span><span><b>Changer le mot de passe</b><small>Choisissez un nouveau mot de passe sécurisé.</small></span><span class="action-arrow">↗</span></a><form class="logout-action-form" method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="action-card action-card-button" type="submit"><span class="action-icon">↗</span><span><b>Se déconnecter</b><small>Fermer votre session en toute sécurité.</small></span><span class="action-arrow">↗</span></button></form></div>
+</section>
+{% endblock %}

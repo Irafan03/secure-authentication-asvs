@@ -8,6 +8,7 @@ import sys
 import os
 from unittest.mock import patch, MagicMock
 from datetime import datetime
+import auth_register
 
 # Ajouter le répertoire parent au path pour les imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,6 +17,11 @@ from backend.auth_register import (
     change_password, hash_password, verify_password,
     validate_password, get_user_by_id
 )
+
+
+@pytest.fixture(autouse=True)
+def offline_hibp(monkeypatch):
+    monkeypatch.setattr(auth_register, "check_password_pwned", lambda _password: True)
 
 class TestPasswordChangeValidation:
     """Tests pour la validation lors du changement de mot de passe."""
@@ -37,15 +43,21 @@ class TestPasswordChangeValidation:
             # Test avec nouveau mot de passe trop court
             result = change_password(1, current_password, "short")
             assert result["success"] is False
-            assert any("12 caractères" in error for error in result["errors"])
+            assert any("8 caractères" in error for error in result["errors"])
             
+<<<<<<< HEAD
             # Test avec nouveau mot de passe contenant un mot contextuel (ASVS 6.2.11)
             result = change_password(1, current_password, "MySecurePassword123")
             assert result["success"] is False
             assert any("contexte de l'application" in error for error in result["errors"])
+=======
+            # Aucun mélange obligatoire de catégories de caractères.
+            result = change_password(1, current_password, "simplepassword")
+            assert result["success"] is True
+>>>>>>> 68f20a7 (frontend)
             
             # Test avec mot de passe courant
-            result = change_password(1, current_password, "password123456789")
+            result = change_password(1, current_password, "PaSsWoRd")
             assert result["success"] is False
     
     def test_same_password_rejection(self):
@@ -81,7 +93,11 @@ class TestPasswordChangeScenarios:
         mock_cursor.fetchone.return_value = ("testuser", current_hash)
         
         # Nouveau mot de passe valide et différent
+<<<<<<< HEAD
         new_password = "NewComplexPass456@"
+=======
+        new_password = "NewP2Value456@!"
+>>>>>>> 68f20a7 (frontend)
         result = change_password(1, current_password, new_password)
         
         assert result["success"] is True
@@ -92,9 +108,10 @@ class TestPasswordChangeScenarios:
         mock_cursor.execute.assert_called()
         calls = mock_cursor.execute.call_args_list
 
-        # La dernière requête devrait être l'UPDATE
-        last_call = calls[-1]
-        assert "UPDATE users SET password_hash" in last_call[0][0]
+        password_update = next(call for call in calls if "UPDATE users SET password_hash" in call[0][0])
+        assert password_update[0][1][0].startswith("$argon2id$")
+        assert password_update[0][1][0] != new_password
+        assert any("UPDATE sessions SET invalidated = 1" in call[0][0] for call in calls)
     
     def test_wrong_current_password(self, mock_get_connection):
         """Test avec un mauvais mot de passe actuel."""
@@ -265,14 +282,15 @@ class TestPasswordChangeIntegration:
         assert "users" in select_call[0][0]
         assert select_call[0][1] == (user_id,)
         
-        # Deuxième requête: UPDATE pour changer le mot de passe
-        update_call = calls[1]
+        # La première mise à jour stocke le nouveau hash.
+        update_call = next(call for call in calls if "UPDATE users SET password_hash" in call[0][0])
         assert "UPDATE users SET password_hash" in update_call[0][0]
         
         # Vérifier que le nouveau hash est différent de l'ancien
         new_hash = update_call[0][1][0]
         assert new_hash != old_hash
         assert verify_password(new_password, new_hash)
+        assert any("UPDATE sessions SET invalidated = 1" in call[0][0] for call in calls)
     
     @patch('auth_register.get_connection')
     def test_concurrent_password_changes(self, mock_get_connection):

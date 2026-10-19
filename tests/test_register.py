@@ -7,6 +7,7 @@ import pytest
 import sys
 import os
 from unittest.mock import patch, MagicMock
+import auth_register
 
 # Ajouter le répertoire parent au path pour les imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,6 +17,11 @@ from backend.auth_register import (
     hash_password, verify_password, register_user, change_password,
     load_common_passwords, PasswordValidationError, RegistrationError
 )
+
+
+@pytest.fixture(autouse=True)
+def offline_hibp(monkeypatch):
+    monkeypatch.setattr(auth_register, "check_password_pwned", lambda _password: True)
 
 class TestUsernameValidation:
     """Tests de validation du nom d'utilisateur."""
@@ -45,7 +51,7 @@ class TestUsernameValidation:
             ("-username", "Commence par tiret"),
             ("username-", "Finit par tiret"),
             ("user$name", "Caractères spéciaux"),
-            ("123", "Trop court même avec chiffres")
+            ("12", "Trop court")
         ]
         
         for username, description in invalid_cases:
@@ -85,19 +91,19 @@ class TestPasswordValidation:
     """Tests de validation de mot de passe selon ASVS V6.2.1-V6.2.5."""
     
     def test_password_length_validation(self):
-        """Test ASVS V6.2.1 - Longueur minimale de 12 caractères."""
-        # Mots de passe trop courts
-        short_passwords = ["password", "12345678901", "Abc123!"]
+        """Test ASVS V6.2.1 - Longueur minimale de 8 caractères."""
+        short_passwords = ["short7x", "1234567", "Abc123!"]
         
         for password in short_passwords:
             result = validate_password(password)
             assert result["valid"] is False
-            assert any("12 caractères" in error for error in result["errors"])
+            assert any("8 caractères" in error for error in result["errors"])
         
         # Mot de passe de longueur minimale valide
-        result = validate_password("ValidPass123!")
-        # Peut être valide si passe tous les autres critères
+        result = validate_password("jhqwpzvm")
+        assert result["valid"]
     
+<<<<<<< HEAD
     def test_password_no_composition_rules(self):
         """Test ASVS 5.0.0 V6.2.5 - Pas de règles de composition (types de caractères non imposés)."""
         # Des mots de passe d'un seul type de caractères mais >= 12 caractères et uniques
@@ -110,6 +116,12 @@ class TestPasswordValidation:
         for password, description in valid_cases:
             result = validate_password(password)
             assert result["valid"] is True, f"{description}: devrait être accepté (pas de règle de composition). Erreurs: {result['errors']}"
+=======
+    def test_password_complexity_validation(self):
+        """Un mot de passe faible en longueur est refusé, sans règle de classes."""
+        result = validate_password("jhqwpzvm")
+        assert result["valid"]
+>>>>>>> 68f20a7 (frontend)
     
     def test_password_username_validation(self):
         """Test ASVS V6.2.3 - Le mot de passe ne doit pas être le nom d'utilisateur."""
@@ -122,19 +134,36 @@ class TestPasswordValidation:
         result = validate_password("testuser", "testuser")
         assert any("nom d'utilisateur" in error for error in result["errors"])
     
+<<<<<<< HEAD
     def test_common_passwords_validation(self):
         """Test ASVS 5.0.0 V6.2.4 / V6.2.12 - Vérification contre les mots de passe compromis."""
         # Un mot de passe très courant doit être refusé
         result = validate_password("password123456789")
         assert result["valid"] is False
         assert any("compromis" in error or "couramment utilisés" in error for error in result["errors"])
+=======
+    def test_password_composition_not_required(self):
+        """Un mot de passe long et non courant sans classes mélangées est accepté."""
+        result = validate_password("jhqwpzvm")
+        assert result["valid"]
+    
+    def test_common_passwords_validation(self):
+        """Test ASVS V6.2.5 - Vérification contre les mots de passe courants."""
+        # Charger les mots de passe courants pour le test
+        common_passwords = load_common_passwords()
+        
+        assert len(common_passwords) >= 3000
+        result = validate_password("PaSsWoRd")
+        assert any("couramment utilisés" in error for error in result["errors"])
+    
+    def test_password_sequence_is_not_a_composition_rule(self):
+        result = validate_password("123456789012")
+        assert result["valid"]
+>>>>>>> 68f20a7 (frontend)
     
     def test_valid_passwords(self):
         """Test avec des mots de passe entièrement valides."""
-        valid_passwords = [
-            "MySecure@Pass2024", "Complex!Pass456",
-            "Strong#Pwd789AB", "Valid@Secret123"
-        ]
+        valid_passwords = ["jhqwpzvm", "X9pQ2vR7mK4", "123456789012"]
         
         for password in valid_passwords:
             result = validate_password(password)
@@ -220,7 +249,7 @@ class TestUserRegistration:
         errors_text = " ".join(result["errors"]).lower()
         assert "nom d'utilisateur" in errors_text
         assert "email" in errors_text or "adresse" in errors_text
-        assert "12 caractères" in errors_text or "mot de passe" in errors_text
+        assert "8 caractères" in errors_text or "mot de passe" in errors_text
 
 @patch('auth_register.get_connection')
 class TestPasswordChange:

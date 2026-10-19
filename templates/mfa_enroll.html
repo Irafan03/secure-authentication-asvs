@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block title %}Activer la double authentification{% endblock %}
+{% block content %}
+<section class="mfa-page"><a class="back-link" href="{{ url_for('dashboard') }}">← Retour au tableau de bord</a><div class="mfa-heading"><div class="eyebrow">PROTECTION RENFORCÉE</div><h1>Activez la double<br><em>authentification.</em></h1><p>Scannez le QR code avec votre application d’authentification, puis confirmez avec un code à 6 chiffres.</p></div>
+  <div class="mfa-grid"><article class="mfa-step"><div class="step-number">01</div><h2>Scannez ce QR code</h2><p>Ouvrez votre application d’authentification et ajoutez un nouveau compte.</p><div class="qr-frame"><img src="data:image/png;base64,{{ qr_image }}" alt="QR code de configuration MFA"></div><details class="secret-details"><summary>Configuration manuelle</summary><code>{{ secret }}</code></details></article>
+  <article class="mfa-step"><div class="step-number">02</div><h2>Confirmez l’activation</h2><p>Entrez le code temporaire affiché dans votre application.</p><form method="post" action="{{ url_for('mfa_enroll') }}" class="form-stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label class="field"><span>Code à 6 chiffres</span><input name="totp_code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="000000"></label><button class="button button-dark button-full" type="submit">Vérifier et activer <span>→</span></button></form>
+  <div class="recovery-box"><h3>Codes de récupération</h3><p>Conservez-les dans un endroit sûr. Chaque code ne peut être utilisé qu’une fois.</p><div class="recovery-codes">{% for code, _hash in recovery_codes %}<code>{{ code }}</code>{% endfor %}</div></div></article></div>
+</section>
+{% endblock %}

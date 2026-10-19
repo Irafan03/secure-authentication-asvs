@@ -2,7 +2,7 @@
 
 ## Prérequis
 
-- Python 3.8+
+- Python 3.11+
 - MySQL 8.0+
 - pip (gestionnaire de packages Python)
 
@@ -59,9 +59,9 @@ export DB_NAME=secure_auth_db
 export DB_USER=secure_auth_user
 export DB_PASSWORD=VotreMotDePasseSecurise123!
 
-# Flask
-export FLASK_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-export FLASK_ENV=development
+# FastAPI / Starlette
+export SESSION_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+export SESSION_COOKIE_SECURE=false  # true derrière HTTPS en production
 
 # MFA
 export TOTP_ISSUER="SecureAuth ASVS"
@@ -88,23 +88,31 @@ python3 -c "from backend.database import init_db; init_db()"
 ### Mode développement
 
 ```bash
+<<<<<<< HEAD
 python3 -m backend.app
+=======
+python3 -m uvicorn app:app --env-file .env --reload --host 127.0.0.1 --port 8080
+>>>>>>> 68f20a7 (frontend)
 ```
 
-L'application sera accessible sur : **http://localhost:5000**
+L'application sera accessible sur : **http://127.0.0.1:8080**
 
-### Mode production (avec Gunicorn)
+### Mode production
 
 ```bash
+<<<<<<< HEAD
 pip install gunicorn
 gunicorn -w 4 -b 0.0.0.0:5000 backend.app:app
+=======
+python3 -m uvicorn app:app --env-file .env --host 0.0.0.0 --port 8080 --workers 4
+>>>>>>> 68f20a7 (frontend)
 ```
 
 ## Test de l'application
 
 ### 1. Accéder à l'interface web
 
-Ouvrez votre navigateur : http://localhost:5000
+Ouvrez votre navigateur : http://127.0.0.1:8080
 
 ### 2. Créer un compte
 
@@ -112,7 +120,7 @@ Ouvrez votre navigateur : http://localhost:5000
 - Remplissez le formulaire :
   - **Nom d'utilisateur** : minimum 3 caractères
   - **Email** : valide
-  - **Mot de passe** : minimum 12 caractères (sans règles de composition)
+  - **Mot de passe** : minimum 8 caractères (sans règles de composition)
 - Le système vérifie automatiquement si le mot de passe est compromis (HIBP + liste locale)
 
 ### 3. Se connecter
@@ -174,6 +182,7 @@ pytest tests/test_register.py -v
 
 ```
 secure-authentication-asvs/
+<<<<<<< HEAD
 ├── backend/                     # Package Python du backend
 │   ├── backend/app.py                   # Application Flask
 │   ├── auth_*.py                # Authentification et MFA
@@ -185,6 +194,14 @@ secure-authentication-asvs/
 ├── backend/auth_mfa.py                 # Module MFA/TOTP
 ├── backend/database.py                 # Gestion base de données
 ├── backend/config.py                   # Configuration centralisée
+=======
+├── app.py                      # Application FastAPI (interface web)
+├── auth_register.py            # Module d'inscription
+├── auth_login.py               # Module de connexion
+├── auth_mfa.py                 # Module MFA/TOTP
+├── database.py                 # Gestion base de données
+├── config.py                   # Configuration centralisée
+>>>>>>> 68f20a7 (frontend)
 ├── requirements.txt            # Dépendances Python
 ├── backend/common_passwords.txt        # Liste 3000+ mots de passe courants
 ├── templates/                  # Templates HTML
@@ -229,7 +246,7 @@ secure-authentication-asvs/
 
 ### 🎨 Interface utilisateur
 
-- Design professionnel avec Bootstrap 5
+- Interface FastAPI responsive avec styles CSS locaux
 - Gradient moderne (violet/bleu)
 - Responsive et accessible
 - Indicateur de force du mot de passe
@@ -247,7 +264,7 @@ RATE_LIMIT_USER_IP = 10         # Tentatives/heure par user+IP
 RATE_LIMIT_USERNAME = 5         # Tentatives/heure par username
 
 # Mot de passe
-PASSWORD_MIN_LENGTH = 12        # Minimum 12 caractères
+PASSWORD_MIN_LENGTH = 8         # Minimum 8 caractères
 PASSWORD_MAX_LENGTH = 128       # Maximum 128 caractères
 
 # MFA
@@ -265,7 +282,7 @@ RECOVERY_CODES_COUNT = 10       # Nombre de codes de récupération
 | `DB_NAME` | Nom de la base | `secure_auth_db` |
 | `DB_USER` | Utilisateur MySQL | `secure_auth_user` |
 | `DB_PASSWORD` | Mot de passe MySQL | `SecurePass123!` |
-| `FLASK_SECRET_KEY` | Clé secrète Flask | Token 32+ bytes |
+| `SESSION_SECRET_KEY` | Clé de signature des sessions FastAPI/Starlette | Token aléatoire de 32 octets ou plus |
 | `TOTP_ISSUER` | Nom dans l'app MFA | `SecureAuth ASVS` |
 
 ## Dépannage
@@ -278,18 +295,22 @@ mysql.connector.errors.ProgrammingError: Access denied
 
 **Solution** : Vérifiez les variables d'environnement `DB_USER` et `DB_PASSWORD`
 
-### Erreur "No module named 'flask'"
+### Erreur "No module named 'fastapi'"
 
 ```bash
-pip install Flask==3.0.3
+pip install -r requirements.txt
 ```
 
-### Port 5000 déjà utilisé
+### Port 8080 déjà utilisé
 
+<<<<<<< HEAD
 Changez le port dans `backend/app.py` :
+=======
+Choisissez un autre port lors du démarrage d'Uvicorn, par exemple :
+>>>>>>> 68f20a7 (frontend)
 
 ```python
-app.run(debug=True, host='0.0.0.0', port=8000)
+python -m uvicorn app:app --env-file .env --reload --host 127.0.0.1 --port 8081
 ```
 
 ### Échec de l'initialisation de la base
@@ -311,7 +332,7 @@ SHOW GRANTS FOR 'secure_auth_user'@'localhost';
 
 2. **Activer HTTPS** :
    ```python
-   app.config['SESSION_COOKIE_SECURE'] = True
+   SESSION_COOKIE_SECURE=true
    ```
 
 3. **Générer une clé secrète forte** :
@@ -319,7 +340,7 @@ SHOW GRANTS FOR 'secure_auth_user'@'localhost';
    python3 -c "import secrets; print(secrets.token_hex(32))"
    ```
 
-4. **Configurer un serveur WSGI** (Gunicorn, uWSGI)
+4. **Démarrer le serveur ASGI** (Uvicorn)
 
 5. **Mettre en place un reverse proxy** (Nginx, Apache)
 

@@ -5,6 +5,9 @@ ASVS v4.0 — Niveau 2
 
 import os
 import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
 import mysql.connector
 from mysql.connector import pooling, Error
 
@@ -15,6 +18,9 @@ except ImportError:
     pass
 
 logger = logging.getLogger(__name__)
+
+# Load project settings by absolute path, regardless of the shell's current directory.
+load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
 # ---------------------------------------------------------------------------
 # Configuration (variables d'environnement, jamais en dur)
@@ -168,7 +174,10 @@ def init_db() -> None:
         conn = get_connection()
         cursor = conn.cursor()
         for stmt in SCHEMA_SQL:
+            if "ADD COLUMN IF NOT EXISTS mfa_enabled" in stmt:
+                continue
             cursor.execute(stmt)
+<<<<<<< HEAD:backend/database.py
         # S'assurer que mfa_enabled et last_login_at existent
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN mfa_enabled TINYINT(1) NOT NULL DEFAULT 0")
@@ -178,6 +187,14 @@ def init_db() -> None:
             cursor.execute("ALTER TABLE users ADD COLUMN last_login_at DATETIME NULL")
         except Error:
             pass  # Déjà présente ou erreur ignorée
+=======
+        # `ADD COLUMN IF NOT EXISTS` is not supported by every MySQL version.
+        cursor.execute("SHOW COLUMNS FROM users LIKE 'mfa_enabled'")
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN mfa_enabled TINYINT(1) NOT NULL DEFAULT 0"
+            )
+>>>>>>> 68f20a7 (frontend):database.py
         conn.commit()
         cursor.close()
         conn.close()

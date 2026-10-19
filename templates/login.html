@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}Connexion{% endblock %}
+{% block content %}
+<section class="auth-layout auth-layout-login">
+  <aside class="auth-aside">
+    <div class="eyebrow eyebrow-light"><span class="status-pip"></span> VOTRE ESPACE SÉCURISÉ</div>
+    <h1>Ravi de vous<br><em>retrouver.</em></h1>
+    <p>Connectez-vous pour accéder à votre espace personnel et à vos paramètres de sécurité.</p>
+    <div class="login-illustration"><div class="login-ring"></div><div class="login-lock">⌑</div><span class="login-check">✓</span></div>
+    <div class="aside-footnote">Une authentification protégée à chaque connexion.</div>
+  </aside>
+  <div class="auth-panel">
+    <div class="form-heading"><div class="eyebrow">CONNEXION</div><h2>Bon retour</h2><p>Entrez vos identifiants pour continuer.</p></div>
+    <form method="post" action="{{ url_for('login') }}" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Nom d’utilisateur</span><input name="username" type="text" autocomplete="username" required value="{{ username|default('') }}" placeholder="Votre nom d’utilisateur"></label>
+      <label class="field"><span>Mot de passe</span><div class="password-wrap"><input name="password" type="password" autocomplete="current-password" required autofocus placeholder="Votre mot de passe"><button class="password-toggle" type="button" aria-label="Afficher le mot de passe" aria-pressed="false" data-password-toggle>Afficher</button></div></label>
+      {% if mfa_required %}<label class="field"><span>Code de vérification</span><input name="totp_code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required autofocus placeholder="000000"><small>Saisissez le code à 6 chiffres de votre application d’authentification.</small></label>{% endif %}
+      <div class="form-meta"><span class="tiny-shield">◈</span> Connexion protégée par votre session sécurisée</div>
+      <button class="button button-dark button-full" type="submit">Se connecter <span aria-hidden="true">→</span></button>
+    </form>
+    <p class="form-switch">Pas encore de compte ? <a href="{{ url_for('register') }}">Inscrivez-vous</a></p>
+    <p class="form-privacy"><span>◈</span> Ne partagez jamais votre mot de passe.</p>
+  </div>
+</section>
+{% endblock %}

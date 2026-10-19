@@ -2,17 +2,21 @@
 
 ## Vue d'ensemble
 
-L'interface web Flask permet de tester et démontrer toutes les fonctionnalités d'authentification sécurisée conformes à l'OWASP ASVS 5.0.0 niveau L2.
+L'interface web FastAPI permet de tester et démontrer les fonctionnalités d'authentification sécurisée conformes à l'OWASP ASVS 5.0.0 niveau L2.
 
 ## Architecture
 
 ### Structure des fichiers
 
 ```
+<<<<<<< HEAD
 ├── backend/                    # Package Python du backend
 │   └── backend/app.py                  # Application Flask principale
+=======
+├── app.py                      # Application FastAPI principale
+>>>>>>> 68f20a7 (frontend)
 ├── templates/                  # Templates Jinja2
-│   ├── base.html              # Layout de base (Bootstrap 5, design gradient)
+│   ├── base.html              # Layout partagé et navigation
 │   ├── index.html             # Page d'accueil
 │   ├── register.html          # Formulaire d'inscription
 │   ├── login.html             # Formulaire de connexion
@@ -35,7 +39,8 @@ L'interface web Flask permet de tester et démontrer toutes les fonctionnalités
 | `/login` | GET, POST | Connexion | Non |
 | `/dashboard` | GET | Tableau de bord | ✅ Requise |
 | `/mfa/enroll` | GET, POST | Enrôlement MFA | ✅ Requise |
-| `/logout` | GET | Déconnexion | ✅ Requise |
+| `/account/password` | GET, POST | Changement de mot de passe | ✅ Requise |
+| `/logout` | POST | Déconnexion | ✅ Requise |
 | `/api/validate-password` | POST | Validation temps réel (API) | Non |
 
 ## Design et UX
@@ -47,9 +52,9 @@ L'interface web Flask permet de tester et démontrer toutes les fonctionnalités
   - Secondaire : `#764ba2` (violet profond)
   - Gradient : `linear-gradient(135deg, #667eea 0%, #764ba2 100%)`
   
-- **Framework CSS** : Bootstrap 5.3.0
-- **Icônes** : Font Awesome 6.4.0
-- **Polices** : System fonts (-apple-system, BlinkMacSystemFont, Segoe UI, etc.)
+- **Framework CSS** : CSS local, sans dépendance externe
+- **Icônes** : symboles intégrés à l'interface
+- **Polices** : polices système avec solutions de repli
 
 ### Composants UI
 
@@ -60,13 +65,14 @@ L'interface web Flask permet de tester et démontrer toutes les fonctionnalités
 - Animations CSS au survol
 
 #### Formulaires
-- Validation en temps réel
+- Aide de longueur côté navigateur et validation complète côté serveur
 - Messages d'erreur contextuels
 - Indicateur de force de mot de passe (barre de progression colorée)
-- Auto-complétion désactivée pour les champs sensibles
+- Autocomplétion permise avec les valeurs `current-password` et `new-password`
+- Collage autorisé dans les champs de mot de passe
 
 #### Feedback utilisateur
-- Flash messages Bootstrap (success, danger, warning, info)
+- Messages de retour intégrés (succès, erreur, avertissement, information)
 - Loader/spinner pour les actions longues
 - Confirmations visuelles (icônes, couleurs)
 
@@ -88,21 +94,21 @@ L'interface web Flask permet de tester et démontrer toutes les fonctionnalités
 ### 2. Inscription (`register.html`)
 
 **Fonctionnalités** :
-- ✅ Validation côté client et serveur
-- ✅ Indicateur de force du mot de passe (temps réel)
+- ✅ Validation côté navigateur et validation de sécurité côté serveur
+- ✅ Aide visuelle de longueur du mot de passe
 - ✅ Vérification disponibilité username/email
 - ✅ Messages d'erreur génériques (ASVS 6.3.8)
-- ✅ Validation HIBP en arrière-plan
+- ✅ Contrôle des mots de passe compromis lors de la validation serveur
 
 **Champs** :
 - Nom d'utilisateur (min 3 caractères)
 - Email (validation format)
-- Mot de passe (12-128 caractères, aucune règle de composition)
+- Mot de passe (8-128 caractères, aucune règle de composition)
 - Confirmation mot de passe
 
-**Validation en temps réel** :
+**API de validation disponible** (le formulaire applique la validation complète à l'envoi) :
 ```javascript
-// API appelée à chaque frappe (debounced)
+// Endpoint JSON facultatif
 POST /api/validate-password
 {
   "password": "monMotDePasse",
@@ -116,11 +122,7 @@ POST /api/validate-password
 }
 ```
 
-**Indicateur de force** :
-- 🔴 Faible (< 12 caractères)
-- 🟡 Moyen (12-15 caractères)
-- 🟢 Fort (> 15 caractères)
-- ⚫ Compromis (détecté dans HIBP ou liste locale)
+**Aide de longueur** : le navigateur indique si le mot de passe atteint la longueur minimale. Les contrôles de mots courants, de contexte et de compromission restent côté serveur.
 
 ### 3. Connexion (`login.html`)
 
@@ -244,11 +246,7 @@ Généré le: 17/10/2026 à 14:30:00
 ## Sécurité de l'interface
 
 ### Protection CSRF
-```python
-# À implémenter en production
-from flask_wtf.csrf import CSRFProtect
-csrf = CSRFProtect(app)
-```
+Les formulaires HTML utilisent un jeton CSRF de session vérifié par l'application FastAPI avant tout POST.
 
 ### Sessions sécurisées
 ```python
@@ -329,7 +327,7 @@ Content-Type: application/json
 ### Textes et traductions
 - Tous les textes sont dans les templates HTML
 - Facile à traduire en modifiant les templates
-- Support i18n avec Flask-Babel (à implémenter)
+- Support i18n (à implémenter)
 
 ## Tests de l'interface
 
@@ -375,7 +373,7 @@ def test_login_with_mfa(client):
 ### Optimisations appliquées
 - ✅ Minification CSS/JS en production (à implémenter)
 - ✅ Compression gzip (à configurer dans Nginx/Apache)
-- ✅ CDN pour Bootstrap et Font Awesome
+- ✅ CSS et scripts servis localement par FastAPI
 - ✅ Lazy loading des images
 
 ### Métriques cibles
@@ -405,15 +403,24 @@ def test_login_with_mfa(client):
 
 ### Environnement de développement
 ```bash
+<<<<<<< HEAD
 python3 -m backend.app
 # http://localhost:5000
+=======
+python3 -m uvicorn app:app --env-file .env --reload --host 127.0.0.1 --port 8080
+# http://127.0.0.1:8080
+>>>>>>> 68f20a7 (frontend)
 ```
 
 ### Environnement de production
 
-#### Avec Gunicorn
+#### Avec Uvicorn
 ```bash
+<<<<<<< HEAD
 gunicorn -w 4 -b 0.0.0.0:8000 backend.app:app
+=======
+uvicorn app:app --env-file .env --host 0.0.0.0 --port 8080 --workers 4
+>>>>>>> 68f20a7 (frontend)
 ```
 
 #### Avec Docker
@@ -423,7 +430,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
+<<<<<<< HEAD
 CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8000", "backend.app:app"]
+=======
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]
+>>>>>>> 68f20a7 (frontend)
 ```
 
 #### Reverse proxy Nginx

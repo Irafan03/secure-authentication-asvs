@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}Créer un compte{% endblock %}
+{% block content %}
+<section class="auth-layout">
+  <aside class="auth-aside">
+    <div class="eyebrow eyebrow-light"><span class="status-pip"></span> BIENVENUE CHEZ SECUREAUTH</div>
+    <h1>Un compte sûr<br>commence <em>ici.</em></h1>
+    <p>Créez votre espace en quelques instants. Nous prenons soin de protéger vos identifiants.</p>
+    <div class="aside-checks"><div><span>✓</span> Hachage sécurisé Argon2id</div><div><span>✓</span> Contrôle des mots de passe compromis</div><div><span>✓</span> Aucun caractère spécial imposé</div></div>
+    <div class="aside-orbit"></div>
+  </aside>
+  <div class="auth-panel">
+    <div class="form-heading"><div class="eyebrow">INSCRIPTION</div><h2>Créer un compte</h2><p>Remplissez les informations ci-dessous pour commencer.</p></div>
+    <form method="post" action="{{ url_for('register') }}" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field"><span>Nom d’utilisateur</span><input name="username" type="text" autocomplete="username" minlength="3" maxlength="64" required placeholder="ex. samira_23"><small>3 à 64 caractères.</small></label>
+      <label class="field"><span>Adresse e-mail</span><input name="email" type="email" autocomplete="email" maxlength="255" required placeholder="vous@exemple.com"></label>
+      <label class="field"><span>Mot de passe</span><div class="password-wrap"><input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required data-password-input placeholder="8 caractères minimum"><button class="password-toggle" type="button" aria-label="Afficher le mot de passe" aria-pressed="false" data-password-toggle>Afficher</button></div><small>8 caractères minimum. Les espaces et les gestionnaires de mots de passe sont acceptés.</small><div class="password-meter" aria-hidden="true"><i></i><i></i><i></i><i></i></div><small class="password-hint" data-password-hint>Choisissez un mot de passe long et difficile à deviner.</small></label>
+      <label class="field"><span>Confirmer le mot de passe</span><div class="password-wrap"><input name="password_confirm" type="password" autocomplete="new-password" maxlength="128" required placeholder="Saisissez-le à nouveau"><button class="password-toggle" type="button" aria-label="Afficher la confirmation du mot de passe" aria-pressed="false" data-password-toggle>Afficher</button></div></label>
+      <button class="button button-dark button-full" type="submit">Créer mon compte <span aria-hidden="true">→</span></button>
+    </form>
+    <p class="form-switch">Vous avez déjà un compte ? <a href="{{ url_for('login') }}">Connectez-vous</a></p>
+    <p class="form-privacy"><span>◈</span> Vos informations restent protégées.</p>
+  </div>
+</section>
+{% endblock %}

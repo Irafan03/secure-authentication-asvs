@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block title %}Accueil{% endblock %}
+{% block content %}
+<section class="hero">
+  <div class="hero-copy">
+    <div class="eyebrow"><span class="status-pip"></span> AUTHENTIFICATION SÉCURISÉE</div>
+    <h1>La sécurité de votre compte,<br><em>sans compromis.</em></h1>
+    <p class="hero-lede">Une expérience de connexion claire, protégée par des contrôles conçus pour garder vos accès entre de bonnes mains.</p>
+    <div class="hero-actions">
+      <a class="button button-dark" href="{{ url_for('register') }}">Créer mon compte <span aria-hidden="true">↗</span></a>
+      <a class="button button-quiet" href="{{ url_for('login') }}">J’ai déjà un compte</a>
+    </div>
+    <div class="hero-note"><span class="note-icon">✓</span> Vos mots de passe sont hachés avec Argon2id.</div>
+  </div>
+  <div class="hero-art" aria-label="Illustration d'un compte protégé">
+    <div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div>
+    <div class="art-spark spark-one">✳</div><div class="art-spark spark-two">✦</div>
+    <div class="shield-card">
+      <div class="shield-top"><span class="mini-lock">⌑</span><span class="secure-label">PROTECTION ACTIVE</span><span class="secure-dot"></span></div>
+      <div class="shield-symbol"><div class="shield-inner">✓</div></div>
+      <div class="shield-caption">Votre espace, protégé.</div>
+      <div class="shield-subcaption">Identifiants chiffrés · Sessions sécurisées</div>
+      <div class="shield-lines"><i></i><i></i><i></i></div>
+    </div>
+    <div class="floating-chip chip-top"><span>✓</span> Argon2id</div>
+    <div class="floating-chip chip-bottom"><span class="secure-dot"></span> Contrôle en temps réel</div>
+  </div>
+</section>
+
+<section class="trust-strip" aria-label="Protections disponibles">
+  <div class="trust-item"><span class="trust-icon">⌑</span><span><b>Mots de passe protégés</b><small>Hachage Argon2id</small></span></div>
+  <div class="trust-item"><span class="trust-icon">◉</span><span><b>Double authentification</b><small>Protection MFA disponible</small></span></div>
+  <div class="trust-item"><span class="trust-icon">⟲</span><span><b>Sessions contrôlées</b><small>Expiration et révocation</small></span></div>
+  <div class="trust-stamp"><span>ASVS</span><small>NIVEAU<br>2</small></div>
+</section>
+
+<section class="section-block">
+  <div class="section-heading"><div><div class="eyebrow">LA SÉCURITÉ AU QUOTIDIEN</div><h2>Simple à utiliser.<br><em>Sérieuse sur la sécurité.</em></h2></div><p>Les protections essentielles sont intégrées à chaque étape de votre parcours.</p></div>
+  <div class="feature-grid">
+    <article class="feature-card"><span class="feature-number">01</span><div class="feature-icon">⌑</div><h3>Un mot de passe qui vous ressemble</h3><p>Choisissez une phrase secrète robuste. Les mots de passe courants et compromis sont détectés.</p></article>
+    <article class="feature-card"><span class="feature-number">02</span><div class="feature-icon">◎</div><h3>Une couche de protection en plus</h3><p>Activez la double authentification pour renforcer l’accès à votre compte.</p></article>
+    <article class="feature-card"><span class="feature-number">03</span><div class="feature-icon">↻</div><h3>Vous gardez le contrôle</h3><p>Modifiez votre mot de passe et mettez fin à vos sessions depuis votre espace.</p></article>
+  </div>
+</section>
+{% endblock %}

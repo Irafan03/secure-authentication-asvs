@@ -45,6 +45,22 @@ class AccountLockedError(AuthenticationError):
     """Exception pour les comptes temporairement bloqués."""
     pass
 
+class AccessDeniedError(AuthenticationError):
+    """Raised when a protected backend operation has no valid session."""
+    pass
+
+def require_valid_session(session_token: Optional[str], user_id: Optional[int] = None) -> Dict[str, Any]:
+    """Require an active session, optionally owned by the requested user.
+
+    This helper is usable by backend services without a Flask dependency.
+    Invalid, expired, revoked, inactive-user, and mismatched-user sessions
+    have the same public failure.
+    """
+    session_data = validate_session(session_token) if session_token else None
+    if not session_data or (user_id is not None and session_data.get("user_id") != user_id):
+        raise AccessDeniedError("Authentication required")
+    return session_data
+
 def generate_session_token() -> str:
     """
     Génère un token de session cryptographiquement sûr.
@@ -294,7 +310,7 @@ def validate_session(session_token: str) -> Optional[Dict[str, Any]]:
                     "mfa_enabled": getattr(u, 'mfa_enabled', False)
                 }
             else:
-                logger.debug(f"Session invalide ou expirée: {session_token}")
+                logger.debug("Session invalide ou expirée")
                 return None
         finally:
             session.close()
@@ -314,6 +330,7 @@ def invalidate_session(session_token: str) -> bool:
         True si la session a été invalidée avec succès
     """
     try:
+<<<<<<< HEAD:backend/auth_login.py
         session = get_db_session()
         try:
             sess = session.query(DbSession).filter(DbSession.session_token == session_token).first()
@@ -321,9 +338,24 @@ def invalidate_session(session_token: str) -> bool:
                 sess.invalidated = True
                 session.commit()
                 logger.info(f"Session invalidée: {session_token}")
+=======
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE sessions 
+                SET invalidated = 1 
+                WHERE session_token = %s
+            """, (session_token,))
+            
+            conn.commit()
+            
+            if cursor.rowcount > 0:
+                logger.info("Session invalidée")
+>>>>>>> 68f20a7 (frontend):auth_login.py
                 return True
             else:
-                logger.warning(f"Tentative d'invalidation d'une session inexistante: {session_token}")
+                logger.warning("Tentative d'invalidation d'une session inexistante")
                 return False
         except Exception as e:
             session.rollback()
@@ -408,7 +440,15 @@ def authenticate_user(
         }
     
     # Récupérer l'utilisateur
-    user = get_user_by_username(username)
+    try:
+        user = get_user_by_username(username)
+    except Exception:
+        # Keep database details out of the authentication response and logs.
+        logger.error("Database error while looking up login account")
+        return {
+            "success": False,
+            "errors": ["Nom d'utilisateur ou mot de passe incorrect"]
+        }
     
     # ASVS 6.3.8: Protection timing attack
     # Si l'utilisateur n'existe pas, exécuter quand même une vérification Argon2

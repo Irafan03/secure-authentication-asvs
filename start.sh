@@ -1,13 +1,10 @@
 #!/bin/bash
-
-# Script de démarrage de l'application SecureAuth ASVS
-# Usage: ./start.sh [dev|prod]
-
-set -e
+set -euo pipefail
 
 MODE="${1:-dev}"
-PORT="${PORT:-5000}"
+PORT="${PORT:-8080}"
 
+<<<<<<< HEAD
 echo "================================================"
 echo "  SecureAuth ASVS - Démarrage de l'application"
 echo "================================================"
@@ -109,4 +106,10 @@ else
     echo "   Pour la production, utilisez: ./start.sh prod"
     echo ""
     python3 -m backend.app
+=======
+if [ "$MODE" = "prod" ]; then
+    exec uvicorn app:app --host 0.0.0.0 --port "$PORT" --workers "${WORKERS:-4}"
+>>>>>>> 68f20a7 (frontend)
 fi
+
+exec uvicorn app:app --reload --host 0.0.0.0 --port "$PORT"

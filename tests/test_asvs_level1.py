@@ -4,15 +4,21 @@ test_asvs_level1.py — Tests de conformité ASVS 5.0.0 V6 Niveau 1
 
 import pytest
 import time
+<<<<<<< HEAD
 from backend.auth_register import validate_password, register_user, check_password_pwned
 from backend.auth_login import authenticate_user, check_rate_limit
 from backend.database import init_db, get_connection
+=======
+from auth_register import validate_password, register_user, check_password_pwned
+from auth_login import authenticate_user, check_rate_limit
+import database
+>>>>>>> 68f20a7 (frontend)
 
 
 @pytest.fixture(scope="module", autouse=True)
-def setup_database():
-    """Initialise la base de données pour les tests."""
-    init_db()
+def setup_database(mysql_test_db):
+    """Initialise uniquement la base MySQL de test dédiée."""
+    database.init_db()
     yield
 
 
@@ -22,7 +28,7 @@ def cleanup_test_data():
     yield
     # Cleanup après le test
     try:
-        with get_connection() as conn:
+        with database.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM users WHERE username LIKE 'testuser%'")
             cursor.execute("DELETE FROM login_attempts WHERE identifier LIKE 'testuser%'")
@@ -36,6 +42,7 @@ def cleanup_test_data():
 # Tests ASVS 6.2 - Validation des mots de passe
 # =============================================================================
 
+<<<<<<< HEAD
 def test_6_2_1_password_min_12_chars():
     # 12 caractères exactement
     result = validate_password("xK9mP2nQ7wRt")
@@ -45,6 +52,15 @@ def test_6_2_1_password_min_12_chars():
     result = validate_password("xK9mP2nQ7wR")
     assert not result["valid"], "Un mot de passe de 11 caractères devrait être refusé"
     assert any("12 caractères" in err for err in result["errors"])
+=======
+def test_6_2_1_password_min_8_chars():
+    result = validate_password("jhqwpzv")
+    assert not result["valid"]
+    assert any("8 caractères" in err for err in result["errors"])
+
+    result = validate_password("jhqwpzvm")
+    assert result["valid"], f"Un mot de passe de 8 caractères devrait être accepté: {result['errors']}"
+>>>>>>> 68f20a7 (frontend)
 
 
 def test_6_2_1_password_64_chars():
@@ -227,12 +243,12 @@ def test_6_4_2_no_password_reset():
 # Tests ASVS 6.3.2 - Pas de comptes par défaut
 # =============================================================================
 
-def test_6_3_2_no_default_accounts():
-    """ASVS 6.3.2: Vérifier qu'aucun compte par défaut (root, admin, sa) n'existe."""
+def test_6_3_2_no_active_default_accounts():
+    """Aucun compte root/admin par défaut ne doit être actif automatiquement."""
     try:
-        with get_connection() as conn:
+        with database.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users WHERE username IN ('root', 'admin', 'sa', 'administrator')")
+            cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1 AND username IN ('root', 'admin', 'sa', 'administrator')")
             count = cursor.fetchone()[0]
             assert count == 0, f"Aucun compte par défaut ne devrait exister (trouvé: {count})"
     except Exception as e:

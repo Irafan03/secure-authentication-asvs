@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Voies d'Authentification (Authentication Paths) & Sécurité ASVS 5.0.0 V6.3 / V6.4
 # ASVS 5.0.0 — V6.3 et V6.4 (récupération et cycle de vie)
 
@@ -132,3 +133,49 @@ En l'absence de ces variables, le backend par défaut (`NOTIFICATION_BACKEND=dev
 - L'inscription courante prouve la possession de l'adresse e-mail et le choix d'un mot de passe. L'enrôlement MFA exige une session authentifiée par ces éléments ; la récupération MFA exige cette session (donc le MFA existant, TOTP ou code de récupération), puis mot de passe et boîte e-mail.
 
 En production, configurer `NOTIFICATION_BACKEND=email`, un SMTP avec STARTTLS/SSL et `PASSWORD_RESET_URL_BASE` / `APP_PUBLIC_BASE_URL` vers le domaine HTTPS public. Le backend `dev` journalise le contenu et n'expédie pas réellement le message ; les flux de récupération ne sont alors pas opérationnels pour les utilisateurs distants.
+=======
+# Authentication paths and backend controls
+
+## Password login
+
+`auth_login.authenticate_user` applies the IP, account/IP, and account-wide
+limits before looking up the user. The stored Argon2id password hash is
+verified with `auth_register.verify_password`. Missing users and wrong
+passwords receive the same public error. If MFA is enabled, password login
+does not issue a session until the TOTP or a recovery code is verified.
+
+## Sessions and logout
+
+Successful authentication creates a 256-bit random token with
+`secrets.token_hex`, stores it in the MySQL `sessions` table, and sets its
+expiry. `validate_session` rejects expired, revoked, or inactive-user sessions.
+`logout_user` invalidates the stored session; its token is not written to logs.
+
+## Backend authorization
+
+Backend operations that act on a user's private account data must call
+`require_valid_session(session_token, user_id)` and use the returned session
+data as the authorized identity. It raises `AccessDeniedError` when the token
+is missing, expired, revoked, inactive, or belongs to another user. MFA
+enrollment and enrollment validation enforce this in `auth_mfa.py`; this
+control has no Flask dependency. Flask routes may add their own presentation
+layer checks, but those checks do not replace backend authorization.
+
+## Rate limits
+
+The current defaults are in `config.py`: 20 failed attempts per IP in 15
+minutes with a 30-minute IP block; 5 per account/IP in 10 minutes with a
+15-minute block; and a 50-attempt account threshold in one hour with
+progressive delay. Counts are queried from MySQL within the configured
+windows. The rate-limit check currently fails open if MySQL is unavailable;
+operators should monitor database availability and treat this as a remaining
+hardening limitation.
+
+## Verification
+
+P2 integration tests use MySQL only. Set `TEST_DB_NAME` to a pre-created,
+dedicated test database whose name starts with `test_`; tests skip MySQL cases
+when it is unset and refuse names without that prefix. See the P2 section in
+`README.md` for environment variables and commands. The suite does not create
+or delete databases and does not inspect or alter production accounts.
+>>>>>>> 68f20a7 (frontend)

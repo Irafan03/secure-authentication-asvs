@@ -81,7 +81,7 @@ secure-authentication-asvs/
 - Par username : 50 tentatives / 1h (délai progressif)
 
 ### Mots de passe
-- Min : 12 caractères
+- Min : 8 caractères
 - Max : 128 caractères
 - HIBP : Timeout 2s, fail-open
 

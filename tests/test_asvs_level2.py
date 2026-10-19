@@ -3,12 +3,23 @@ test_asvs_level2.py — Tests de conformité ASVS 5.0.0 V6 Niveau 2
 """
 
 import pytest
+<<<<<<< HEAD
 from backend.auth_register import validate_password
 from backend.auth_mfa import (
+=======
+import auth_register
+from auth_register import validate_password
+from auth_mfa import (
+>>>>>>> 68f20a7 (frontend)
     generate_totp_secret, generate_totp_uri, verify_totp_code,
     generate_recovery_codes, enroll_mfa, validate_mfa_enrollment
 )
 import pyotp
+
+
+@pytest.fixture(autouse=True)
+def offline_hibp(monkeypatch):
+    monkeypatch.setattr(auth_register, "check_password_pwned", lambda _password: True)
 
 
 # =============================================================================
@@ -140,16 +151,18 @@ def test_6_3_8_registration_generic_message():
 # Tests ASVS 6.2.12 - HIBP au changement de mot de passe
 # =============================================================================
 
-def test_6_2_12_hibp_on_password_change():
-    """ASVS 6.2.12: Vérification HIBP appliquée au changement de mot de passe."""
-    # validate_password est appelé par change_password
-    # Vérifier qu'un mot de passe compromis est refusé
-    
-    # Mot de passe très courant qui devrait être dans HIBP
-    result = validate_password("password123456789")
-    
-    # Devrait être refusé (soit par liste locale, soit par HIBP)
-    assert not result["valid"], "Un mot de passe compromis devrait être refusé"
+def test_6_2_12_hibp_on_password_change(monkeypatch):
+    """La validation invoque aussi le contrôle HIBP, réutilisé au changement."""
+    import auth_register
+    checked = []
+    monkeypatch.setattr(
+        auth_register, "check_password_pwned",
+        lambda password: checked.append(password) or False,
+    )
+    result = validate_password("jhqwpzvm")
+
+    assert not result["valid"]
+    assert checked == ["jhqwpzvm"]
 
 
 # =============================================================================

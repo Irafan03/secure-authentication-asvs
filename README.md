@@ -12,7 +12,7 @@ Bibliothèque d'authentification Python conforme au niveau L2 de l'OWASP ASVS 5.
 ## 📋 Fonctionnalités
 
 ### Authentification de base
-- ✅ Validation robuste des mots de passe (12-128 caractères, pas de règles de composition)
+- ✅ Validation robuste des mots de passe (8-128 caractères, pas de règles de composition)
 - ✅ Hachage Argon2id avec paramètres sécurisés
 - ✅ Vérification mots de passe compromis (HIBP + liste locale 3000+)
 - ✅ Protection contre les mots contextuels
@@ -43,16 +43,16 @@ Bibliothèque d'authentification Python conforme au niveau L2 de l'OWASP ASVS 5.
 
 ## 🌐 Interface Web
 
-Cette application inclut une interface web complète construite avec Flask pour tester et démontrer les fonctionnalités d'authentification sécurisée.
+Cette application inclut une interface web complète construite avec FastAPI pour tester et démontrer les fonctionnalités d'authentification sécurisée.
 
 ### Fonctionnalités de l'interface
 
-- 🎨 **Design professionnel** : Interface moderne avec Bootstrap 5, gradient violet/bleu
+- 🎨 **Design professionnel** : Interface responsive, sans dépendance CSS externe
 - 📱 **Responsive** : Compatible desktop, tablette et mobile
 - 🔐 **Inscription sécurisée** : Validation en temps réel, indicateur de force du mot de passe
 - 🚪 **Connexion** : Support MFA, messages d'erreur génériques
 - 📊 **Tableau de bord** : Statistiques du compte, gestion MFA
-- 📲 **Enrôlement MFA** : QR code, codes de récupération téléchargeables
+- 📲 **Enrôlement MFA** : QR code et codes de récupération
 - ⚠️ **Pages d'erreur** : 404 et 500 personnalisées
 
 ### Démarrage rapide
@@ -61,17 +61,21 @@ Cette application inclut une interface web complète construite avec Flask pour 
 # 1. Installer les dépendances
 pip install -r requirements.txt
 
-# 2. Configurer la base de données
-cp .env.example .env
-# Éditez .env avec vos paramètres MySQL
+# 2. Configurer la base de données (PowerShell)
+Copy-Item .env.example .env
+# Éditez .env : configurez MySQL et remplacez SESSION_SECRET_KEY
 
-# 3. Charger les variables d'environnement
-source .env
+# 3. Lancer FastAPI en chargeant .env
+python -m uvicorn app:app --env-file .env --reload --host 127.0.0.1 --port 8080
 
+<<<<<<< HEAD
 # 4. Lancer l'application
 python3 -m backend.app
 
 # L'application sera disponible sur http://localhost:5000
+=======
+# Ouvrez http://127.0.0.1:8080
+>>>>>>> 68f20a7 (frontend)
 ```
 
 **📖 Guide complet : Consultez [GUIDE_DEMARRAGE.md](GUIDE_DEMARRAGE.md) pour des instructions détaillées**
@@ -216,13 +220,46 @@ pytest tests/test_asvs_level1.py -v
 pytest --cov=. --cov-report=html
 ```
 
+## Backend P2 : authentification et contrôle d'accès
+
+`auth_login.py` gère l'authentification MySQL, les tentatives échouées et les sessions backend. Les limites actuelles sont de 20 échecs par IP sur 15 minutes (blocage 30 minutes), 5 par couple compte/IP sur 10 minutes (blocage 15 minutes), puis un délai progressif et un seuil de 50 par compte sur une heure. Les tentatives plus anciennes que leur fenêtre ne comptent plus; leur nettoyage est périodique.
+
+Les sessions utilisent un token aléatoire généré par `secrets`, sont stockées dans la table `sessions`, expirent après 8 heures et sont invalidées par `logout_user`. Les opérations backend privées doivent appeler `require_valid_session(token, user_id)`; l'enrôlement et la validation MFA appliquent déjà ce contrôle directement dans les services d'authentification. Les opérations refusent également une session expirée, révoquée ou appartenant à un autre utilisateur.
+
+Les tests qui accèdent à MySQL exigent une base **séparée** dont le nom commence par `test_`. Créez-la explicitement et configurez les variables avant les tests :
+
+```powershell
+# Dans MySQL, une seule fois :
+# CREATE DATABASE test_secure_auth CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+$env:DB_HOST = "localhost"
+$env:DB_PORT = "3306"
+$env:DB_USER = "app_user"
+$env:DB_PASSWORD = "your_test_db_password"
+$env:DB_NAME = "secure_auth"
+$env:TEST_DB_NAME = "test_secure_auth"
+```
+
+Le compte MySQL doit avoir accès à `test_secure_auth`; la fixture refuse tout `TEST_DB_NAME` sans préfixe `test_` et ne crée ni ne supprime de base. Exécutez les tests P2 et la suite :
+
+```powershell
+pytest -q tests/test_login.py
+pytest -q tests/test_rate_limit.py
+pytest -q tests/test_session.py
+pytest -q tests/test_access_control.py
+pytest -q
+```
+
+Sans `TEST_DB_NAME`, les tests d'intégration MySQL sont ignorés; ils ne sont pas considérés comme réussis. La vérification des comptes par défaut porte sur les comptes `root`, `admin`, `sa` et `administrator` actifs dans cette base de test. Aucun compte par défaut n'est créé par l'initialisation du schéma. Les résultats restent limités aux contrôles testés; un audit ASVS complet nécessite aussi une validation de déploiement et de configuration.
+
 ## 🔧 Configuration avancée
 
 Tous les paramètres de sécurité sont centralisés dans `backend/config.py` :
 
+`common_passwords.txt` contient le dictionnaire SecLists [`Passwords/Common-Credentials/10k-most-common.txt`](https://github.com/danielmiessler/SecLists/blob/master/Passwords/Common-Credentials/10k-most-common.txt) (10 001 entrées présentes, toutes distinctes après normalisation sans casse). SecLists est distribué sous licence [MIT](https://github.com/danielmiessler/SecLists/blob/master/LICENSE). `load_common_passwords()` refuse une liste absente, illisible ou inférieure au seuil `LOCAL_COMMON_PASSWORDS_MIN`; dans ces cas, l'inscription et le changement de mot de passe échouent fermés. Un changement réussi met à jour le hash Argon2id puis invalide toutes les sessions de cet utilisateur dans la même transaction.
+
 ```python
 # Mots de passe
-PASSWORD_MIN_LENGTH = 12
+PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
 
 # Rate limiting

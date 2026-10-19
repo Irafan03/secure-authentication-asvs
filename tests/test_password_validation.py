@@ -4,23 +4,32 @@ Tests sans dépendance à la base de données
 """
 
 import pytest
+<<<<<<< HEAD
 from backend.auth_register import validate_password
+=======
+import auth_register
+from auth_register import validate_password
+>>>>>>> 68f20a7 (frontend)
+
+
+@pytest.fixture(autouse=True)
+def offline_hibp(monkeypatch):
+    monkeypatch.setattr(auth_register, "check_password_pwned", lambda _password: True)
 
 
 # =============================================================================
 # Tests ASVS 6.2 - Validation des mots de passe
 # =============================================================================
 
-def test_6_2_1_password_min_12_chars():
-    """ASVS 6.2.1: Mot de passe d'au moins 12 caractères accepté."""
-    # 12 caractères exactement - utiliser un mot de passe unique non compromis
-    result = validate_password("xK9mP2nQ7wRt")
-    assert result["valid"], f"Un mot de passe de 12 caractères devrait être accepté. Erreurs: {result['errors']}"
-    
-    # 11 caractères refusé
-    result = validate_password("xK9mP2nQ7wR")
-    assert not result["valid"], "Un mot de passe de 11 caractères devrait être refusé"
-    assert any("12 caractères" in err for err in result["errors"])
+def test_6_2_1_password_min_8_chars():
+    """ASVS 6.2.1: Sept caractères refusés, huit et plus acceptés."""
+    result = validate_password("jhqwpzv")
+    assert not result["valid"]
+    assert any("8 caractères" in err for err in result["errors"])
+
+    for password in ("jhqwpzvm", "jhqwpzvmx", "xK9mP2nQ7wRt"):
+        result = validate_password(password)
+        assert result["valid"], f"{len(password)} caractères devraient être acceptés: {result['errors']}"
 
 
 def test_6_2_1_password_64_chars():

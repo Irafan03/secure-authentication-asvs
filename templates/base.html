@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f5ef">
+  <title>{% block title %}SecureAuth{% endblock %} · SecureAuth</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+</head>
+<body>
+  <div class="site-shell">
+    <header class="topbar">
+      <a class="brand" href="{{ url_for('index') }}" aria-label="SecureAuth, accueil">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span>secure<span class="brand-light">auth</span></span>
+      </a>
+      <nav class="nav-links" aria-label="Navigation principale">
+        {% if session.get('session_token') %}
+          <a href="{{ url_for('dashboard') }}">Tableau de bord</a>
+          <a href="{{ url_for('password_settings') }}">Mot de passe</a>
+          <form class="nav-logout-form" method="post" action="{{ url_for('logout') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="nav-cta" type="submit">Déconnexion <span aria-hidden="true">↗</span></button>
+          </form>
+        {% else %}
+          <a href="{{ url_for('login') }}">Connexion</a>
+          <a class="nav-cta" href="{{ url_for('register') }}">Créer un compte <span aria-hidden="true">↗</span></a>
+        {% endif %}
+      </nav>
+    </header>
+
+    <main id="main-content">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-stack" aria-live="polite">
+            {% for category, message in messages %}
+              <div class="flash flash-{{ category }}" role="status">
+                <span class="flash-dot" aria-hidden="true"></span>{{ message }}
+                <button class="flash-close" type="button" aria-label="Fermer">×</button>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+      <span><span class="footer-lock" aria-hidden="true">◈</span> SecureAuth</span>
+      <span>Une authentification pensée pour votre sécurité.</span>
+      <span>OWASP ASVS · Niveau 2</span>
+    </footer>
+  </div>
+</body>
+</html>
