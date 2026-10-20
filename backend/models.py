@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, Enum, ForeignKey, Index,
     create_engine, event
 )
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, scoped_session
 from sqlalchemy.dialects.mysql import INTEGER as MySQLInteger
 import os
@@ -184,7 +185,15 @@ def get_engine():
         db_port = int(os.environ.get("DB_PORT", 3306))
         db_name = os.environ.get("DB_NAME", "secure_auth")
 
-        url = f"mysql+mysqlconnector://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
+        url = URL.create(
+            "mysql+mysqlconnector",
+            username=db_user,
+            password=db_password,
+            host=db_host,
+            port=db_port,
+            database=db_name,
+            query={"charset": "utf8mb4"},
+        )
         _engine = create_engine(
             url,
             pool_size=5,

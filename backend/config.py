@@ -112,8 +112,10 @@ SESSION_TOKEN_LENGTH = 32  # Longueur du token (bytes)
 
 # ASVS V6.4 — Jetons de récupération
 PASSWORD_RESET_TOKEN_TTL = timedelta(minutes=20)
-PASSWORD_RESET_URL_BASE = os.environ.get("PASSWORD_RESET_URL_BASE", "http://localhost:5000/password-reset/confirm")
-APP_PUBLIC_BASE_URL = os.environ.get("APP_PUBLIC_BASE_URL", "http://localhost:5000")
+APP_PUBLIC_BASE_URL = os.environ.get("APP_PUBLIC_BASE_URL", "http://127.0.0.1:5173")
+PASSWORD_RESET_URL_BASE = os.environ.get(
+    "PASSWORD_RESET_URL_BASE", f"{APP_PUBLIC_BASE_URL.rstrip('/')}/password-reset/confirm"
+)
 
 # =============================================================================
 # Sécurité générale & Anti-énumération (6.3.8)

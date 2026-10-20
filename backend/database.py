@@ -177,24 +177,14 @@ def init_db() -> None:
             if "ADD COLUMN IF NOT EXISTS mfa_enabled" in stmt:
                 continue
             cursor.execute(stmt)
-<<<<<<< HEAD:backend/database.py
-        # S'assurer que mfa_enabled et last_login_at existent
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN mfa_enabled TINYINT(1) NOT NULL DEFAULT 0")
-        except Error:
-            pass  # Déjà présente ou erreur ignorée
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN last_login_at DATETIME NULL")
-        except Error:
-            pass  # Déjà présente ou erreur ignorée
-=======
         # `ADD COLUMN IF NOT EXISTS` is not supported by every MySQL version.
-        cursor.execute("SHOW COLUMNS FROM users LIKE 'mfa_enabled'")
-        if cursor.fetchone() is None:
-            cursor.execute(
-                "ALTER TABLE users ADD COLUMN mfa_enabled TINYINT(1) NOT NULL DEFAULT 0"
-            )
->>>>>>> 68f20a7 (frontend):database.py
+        for column, definition in (
+            ("mfa_enabled", "TINYINT(1) NOT NULL DEFAULT 0"),
+            ("last_login_at", "DATETIME NULL"),
+        ):
+            cursor.execute(f"SHOW COLUMNS FROM users LIKE '{column}'")
+            if cursor.fetchone() is None:
+                cursor.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
         conn.commit()
         cursor.close()
         conn.close()

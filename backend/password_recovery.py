@@ -140,7 +140,7 @@ def complete_password_reset(token, new_password, ip_address, totp_code=None, rec
 
 
 def request_mfa_recovery(user_id, ip_address):
-    """Email recovery is bound to a logged-in session (password + email mailbox proof)."""
+    """Issue a rate-limited mailbox confirmation for an account with MFA enabled."""
     allowed = check_rate_limit(f"mfa:{user_id}", ip_address or "unknown")
     record_login_attempt(f"mfa:{user_id}", ip_address or "unknown", False)
     if not allowed.get("allowed"):
@@ -163,12 +163,17 @@ def complete_mfa_recovery(user_id, token, current_password, ip_address):
     db = get_db_session()
     try:
         now = datetime.now()
-        user = db.query(User).filter(User.id == user_id, User.is_active.is_(True)).first()
-        record = db.query(PasswordResetToken).filter(
-            PasswordResetToken.user_id == user_id, PasswordResetToken.token_hash == digest,
+        record_query = db.query(PasswordResetToken).filter(
+            PasswordResetToken.token_hash == digest,
             PasswordResetToken.purpose == "mfa_recovery", PasswordResetToken.used_at.is_(None),
             PasswordResetToken.expires_at > now
-        ).with_for_update().first()
+        )
+        if user_id is not None:
+            record_query = record_query.filter(PasswordResetToken.user_id == user_id)
+        record = record_query.with_for_update().first()
+        if user_id is None and record:
+            user_id = record.user_id
+        user = db.query(User).filter(User.id == user_id, User.is_active.is_(True)).first() if user_id is not None else None
         if not user or not record or not hmac.compare_digest(record.token_hash, digest) or not verify_password(current_password, user.password_hash):
             record_login_attempt(f"mfa:{user_id}", ip_address or "unknown", False)
             return False

@@ -13,6 +13,7 @@ from pathlib import Path
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, HashingError
 from email_validator import validate_email, EmailNotValidError
+from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 from .database import get_connection
 from .models import get_db_session, User
 from .config import (
@@ -129,6 +130,10 @@ class PasswordValidationError(Exception):
 
 class RegistrationError(Exception):
     """Exception pour les erreurs d'inscription."""
+    pass
+
+class DatabaseUnavailableError(Exception):
+    """La base de données n'a pas permis de vérifier la disponibilité du compte."""
     pass
 
 def validate_username(username: str) -> Dict[str, Any]:
@@ -319,7 +324,7 @@ def check_username_availability(username: str) -> bool:
                 return cursor.fetchone() is None
         except Exception as e:
             logger.error(f"Erreur lors de la vérification du username: {e}")
-            return False
+            raise DatabaseUnavailableError from e
 
     try:
         session = get_db_session()
@@ -330,7 +335,7 @@ def check_username_availability(username: str) -> bool:
             session.close()
     except Exception as e:
         logger.error(f"Erreur lors de la vérification de la disponibilité du nom d'utilisateur: {e}")
-        return False
+        raise DatabaseUnavailableError from e
 
 def check_email_availability(email: str) -> bool:
     """
@@ -350,7 +355,7 @@ def check_email_availability(email: str) -> bool:
                 return cursor.fetchone() is None
         except Exception as e:
             logger.error(f"Erreur lors de la vérification de l'email: {e}")
-            return False
+            raise DatabaseUnavailableError from e
 
     try:
         session = get_db_session()
@@ -361,7 +366,7 @@ def check_email_availability(email: str) -> bool:
             session.close()
     except Exception as e:
         logger.error(f"Erreur lors de la vérification de la disponibilité de l'email: {e}")
-        return False
+        raise DatabaseUnavailableError from e
 
 def register_user(username: str, email: str, password: str) -> Dict[str, Any]:
     """
@@ -402,10 +407,15 @@ def register_user(username: str, email: str, password: str) -> Dict[str, Any]:
         return {"success": False, "errors": all_errors}
     
     # Vérifier la disponibilité du nom d'utilisateur
-    username_available = check_username_availability(username)
-    
-    # Vérifier la disponibilité de l'email
-    email_available = check_email_availability(normalized_email)
+    try:
+        username_available = check_username_availability(username)
+        email_available = check_email_availability(normalized_email)
+    except DatabaseUnavailableError:
+        return {
+            "success": False,
+            "error_code": "database_unavailable",
+            "errors": ["La création du compte est momentanément indisponible. Vérifiez la connexion à la base de données."],
+        }
     
     # ASVS 6.3.8: Message générique pour éviter l'énumération
     # Ne pas indiquer si c'est le username ou l'email qui est déjà pris
@@ -438,7 +448,12 @@ def register_user(username: str, email: str, password: str) -> Dict[str, Any]:
         except Exception as e:
             if "Duplicate" in str(e) or "IntegrityError" in str(type(e).__name__):
                 return {"success": False, "errors": ["Ce nom d'utilisateur ou cette adresse email est déjà utilisé"]}
-            return {"success": False, "errors": ["Erreur interne lors de la création du compte"]}
+            logger.exception("Erreur de base de données lors de l'inscription")
+            return {
+                "success": False,
+                "error_code": "database_unavailable",
+                "errors": ["La création du compte est momentanément indisponible. Vérifiez la connexion à la base de données."],
+            }
 
     # Insérer l'utilisateur en base de données (via ORM)
     try:
@@ -470,12 +485,16 @@ def register_user(username: str, email: str, password: str) -> Dict[str, Any]:
     except Exception as e:
         # Gestion des contraintes d'unicité (race condition)
         # ASVS 6.3.8: Message générique pour éviter l'énumération
-        if "Duplicate" in str(e) or "IntegrityError" in str(type(e).__name__):
+        if isinstance(e, SQLAlchemyIntegrityError) or "Duplicate" in str(e) or "IntegrityError" in str(type(e).__name__):
             logger.error(f"Erreur d'intégrité lors de l'inscription: {e}")
             return {"success": False, "errors": ["Ce nom d'utilisateur ou cette adresse email est déjà utilisé"]}
         
-        logger.error(f"Erreur lors de l'inscription de {username}: {e}")
-        return {"success": False, "errors": ["Erreur interne lors de la création du compte"]}
+        logger.exception("Erreur de base de données lors de l'inscription")
+        return {
+            "success": False,
+            "error_code": "database_unavailable",
+            "errors": ["La création du compte est momentanément indisponible. Vérifiez la connexion à la base de données."],
+        }
 
 def change_password(user_id: int, current_password: str, new_password: str, ip_address: str = "127.0.0.1") -> Dict[str, Any]:
     """
@@ -738,12 +757,12 @@ def change_username(user_id: int, new_username: str, current_password: str, ip_a
 
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     """
-    Récupère un utilisateur par son nom d'utilisateur (via ORM).
+    Récupère un utilisateur par son nom d'utilisateur ou son adresse e-mail.
     
     Args:
         username: Le nom d'utilisateur
         
-    Returns:
+        Returns:
         Dict avec les informations utilisateur ou None
     """
     if _is_mocked_conn():
@@ -754,7 +773,14 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
                     "SELECT id, username, email, password_hash, is_active, role, created_at FROM users WHERE username = %s",
                     (username,)
                 )
-                return cursor.fetchone()
+                user = cursor.fetchone()
+                if user is None:
+                    cursor.execute(
+                        "SELECT id, username, email, password_hash, is_active, role, created_at FROM users WHERE email = %s",
+                        (username,)
+                    )
+                    user = cursor.fetchone()
+                return user
         except Exception as e:
             logger.error(f"Erreur lors de la récupération de l'utilisateur {username}: {e}")
             return None
@@ -763,6 +789,8 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
         session = get_db_session()
         try:
             user = session.query(User).filter(User.username == username).first()
+            if user is None:
+                user = session.query(User).filter(User.email == username).first()
             if user:
                 return {
                     "id": user.id,

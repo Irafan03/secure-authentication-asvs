@@ -330,7 +330,6 @@ def invalidate_session(session_token: str) -> bool:
         True si la session a été invalidée avec succès
     """
     try:
-<<<<<<< HEAD:backend/auth_login.py
         session = get_db_session()
         try:
             sess = session.query(DbSession).filter(DbSession.session_token == session_token).first()
@@ -338,21 +337,6 @@ def invalidate_session(session_token: str) -> bool:
                 sess.invalidated = True
                 session.commit()
                 logger.info(f"Session invalidée: {session_token}")
-=======
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                UPDATE sessions 
-                SET invalidated = 1 
-                WHERE session_token = %s
-            """, (session_token,))
-            
-            conn.commit()
-            
-            if cursor.rowcount > 0:
-                logger.info("Session invalidée")
->>>>>>> 68f20a7 (frontend):auth_login.py
                 return True
             else:
                 logger.warning("Tentative d'invalidation d'une session inexistante")
@@ -489,7 +473,8 @@ def authenticate_user(
 
         
     
-    # Mot de passe correct, vérifier si MFA est requis
+    # La MFA est obligatoire pour tous les comptes. Un compte sans facteur validé
+    # reçoit uniquement une session limitée à l'enrôlement MFA.
     user_id = user["id"]
     enrollment_db = get_db_session()
     try:
@@ -497,14 +482,19 @@ def authenticate_user(
             MfaReenrollment.user_id == user_id).first() is not None
     finally:
         enrollment_db.close()
-    if needs_mfa_enrollment:
+    mfa_enabled = is_mfa_enabled(user_id)
+    if needs_mfa_enrollment or not mfa_enabled:
         restricted_token = create_session(user_id, ip_address, mfa_verified=False)
         record_login_attempt(username, ip_address, True)
         return {
             "success": True, "session_token": restricted_token, "mfa_enrollment_required": True,
-            "user": {"id": user["id"], "username": user["username"], "email": user["email"], "role": user["role"]}
+            "user": {
+                "id": user["id"], "username": user["username"], "email": user["email"],
+                "role": user["role"], "mfa_enabled": False,
+                "mfa_enrollment_required": True,
+            }
         }
-    mfa_required = is_mfa_enabled(user_id)
+    mfa_required = True
     
     if mfa_required:
         # MFA est activé, vérifier le second facteur
@@ -629,7 +619,9 @@ def authenticate_user(
                 "id": user["id"],
                 "username": user["username"],
                 "email": user["email"],
-                "role": user["role"]
+                "role": user["role"],
+                "mfa_enabled": True,
+                "mfa_enrollment_required": False,
             }
         }
         

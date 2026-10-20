@@ -180,11 +180,13 @@ class DevLogNotificationService(BaseNotificationService):
             "sent_at": datetime.now()
         }
         self.sent_notifications.append(record)
+        # Security links (password reset, MFA recovery) are bearer credentials.
+        # Never write their contents to application logs, even in development.
         logger.warning(
-            f"[SECURITY NOTIFICATION DEV] To: {recipient} | Type: {event_type} | Subject: {subject}\n"
-            f"--- Contenu ---\n{message}\n----------------"
+            "[DEV NOTIFICATION NOT SENT] recipient=%s event=%s. Configure SMTP to deliver this message.",
+            recipient, event_type,
         )
-        return True
+        return False
 
     def clear(self):
         """Réinitialise l'historique des notifications (utile pour les tests)."""
@@ -203,11 +205,11 @@ class EmailNotificationService(BaseNotificationService):
         smtp_port: Optional[int] = None,
         smtp_user: Optional[str] = None,
         smtp_password: Optional[str] = None,
-        use_tls: bool = True,
-        use_ssl: bool = False,
+        use_tls: Optional[bool] = None,
+        use_ssl: Optional[bool] = None,
         from_email: Optional[str] = None
     ):
-        self.smtp_host = smtp_host or os.environ.get("SMTP_HOST", "localhost")
+        self.smtp_host = smtp_host or os.environ.get("SMTP_HOST", "")
         self.smtp_port = smtp_port or int(os.environ.get("SMTP_PORT", 587))
         self.smtp_user = smtp_user or os.environ.get("SMTP_USER", "")
         self.smtp_password = smtp_password or os.environ.get("SMTP_PASSWORD", "")
@@ -257,7 +259,7 @@ def get_notification_service() -> BaseNotificationService:
     global _current_notification_service
     if _current_notification_service is None:
         backend = os.environ.get("NOTIFICATION_BACKEND", "dev").lower()
-        if backend == "email" and os.environ.get("SMTP_HOST"):
+        if backend == "email":
             _current_notification_service = EmailNotificationService()
         else:
             _current_notification_service = DevLogNotificationService()

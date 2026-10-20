@@ -1,399 +1,484 @@
-"""
-app.py — Interface web Flask pour le système d'authentification ASVS
-Application de démonstration et test
-"""
+"""JSON authentication API consumed by the React frontend."""
 
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from __future__ import annotations
+
 import logging
-from functools import wraps
-from datetime import datetime
 import os
-from html import escape
+import secrets
+from functools import wraps
+from pathlib import Path
+from typing import Any, Callable
 
-# Import des modules d'authentification
-from .auth_register import register_user, validate_password
-from .auth_login import authenticate_user, logout_user, validate_session
-from .auth_mfa import enroll_mfa, validate_mfa_enrollment, generate_qr_code, generate_totp_uri
+from flask import Flask, g, jsonify, make_response, request, send_from_directory
+
+from .auth_login import authenticate_user, check_rate_limit, logout_user, record_login_attempt, validate_session
+from .auth_mfa import (
+    enroll_mfa,
+    get_totp_secret,
+    is_mfa_enabled,
+    validate_mfa_enrollment,
+    verify_recovery_code,
+    verify_totp_code,
+)
+from .auth_register import change_password, register_user, validate_password, verify_password
+from .config import SESSION_DURATION
 from .database import init_db
-from .models import get_db_session, User, init_db_orm
-from .password_recovery import (request_password_reset, complete_password_reset,
-                               request_mfa_recovery, complete_mfa_recovery)
+from .models import (
+    MfaRecoveryCode,
+    MfaReenrollment,
+    MfaSecret,
+    Session as SessionModel,
+    TotpUsedCode,
+    User,
+    get_db_session,
+    init_db_orm,
+)
+from sqlalchemy import or_
+from .password_recovery import (
+    complete_mfa_recovery,
+    complete_password_reset,
+    request_mfa_recovery,
+    request_password_reset,
+)
 
-# Configuration de l'application
-app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
-app.config['SESSION_COOKIE_SECURE'] = False  # Mettre True en production avec HTTPS
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-# Configuration du logging
-logging.basicConfig(level=logging.INFO)
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
+AUTH_COOKIE = "secureauth_session"
+COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false").lower() == "true"
 logger = logging.getLogger(__name__)
 
+app = Flask(__name__, static_folder=None)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.environ.get("SESSION_SECRET_KEY") or secrets.token_urlsafe(32)
+app.config.update(
+    SESSION_COOKIE_NAME="secureauth_flask_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=COOKIE_SECURE,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
 
-# Décorateur pour les routes protégées
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'session_token' not in session:
-            flash('Veuillez vous connecter pour accéder à cette page.', 'warning')
-            return redirect(url_for('login'))
-        
-        # Valider le token de session
-        session_data = validate_session(session['session_token'])
-        if not session_data:
-            session.clear()
-            flash('Votre session a expiré. Veuillez vous reconnecter.', 'warning')
-            return redirect(url_for('login'))
-
-        if session.get('enrollment_only') and request.endpoint not in ('mfa_enroll', 'logout'):
-            return redirect(url_for('mfa_enroll'))
-        
-        return f(*args, **kwargs)
-    return decorated_function
+_database_initialized = False
 
 
-def admin_required(f):
-    @wraps(f)
-    @login_required
-    def decorated_function(*args, **kwargs):
-        current = validate_session(session.get('session_token'))
-        if not current or current.get('role') != 'admin':
-            return jsonify({'error': 'Accès refusé'}), 403
-        return f(*args, **kwargs)
-    return decorated_function
-
-
-# Route principale
-@app.route('/')
-def index():
-    """Page d'accueil."""
-    if 'session_token' in session:
-        return redirect(url_for('dashboard'))
-    return render_template('index.html')
-
-
-# Route d'inscription
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    """Page d'inscription."""
-    if request.method == 'POST':
-        wants_json = request.is_json or request.accept_mimetypes.best == 'application/json'
-        form_data = request.get_json(silent=True) if request.is_json else request.form
-        if not isinstance(form_data, dict) and request.is_json:
-            form_data = {}
-        form_data = form_data or {}
-        username = form_data.get('username', '').strip()
-        email = form_data.get('email', '').strip()
-        password = form_data.get('password', '')
-        password_confirm = form_data.get('password_confirm', '')
-        
-        # Validation basique
-        if not all([username, email, password, password_confirm]):
-            if wants_json:
-                return jsonify({'success': False, 'errors': ['Tous les champs sont requis.']}), 400
-            flash('Tous les champs sont requis.', 'danger')
-            return render_template('register.html')
-        
-        if password != password_confirm:
-            if wants_json:
-                return jsonify({'success': False, 'errors': ['Les mots de passe ne correspondent pas.']}), 400
-            flash('Les mots de passe ne correspondent pas.', 'danger')
-            return render_template('register.html')
-        
-        # Tenter l'inscription
-        result = register_user(username, email, password)
-        
-        if result['success']:
-            if wants_json:
-                return jsonify({'success': True, 'message': 'Compte créé. Vous pouvez maintenant vous connecter.'}), 201
-            flash(f'Compte créé avec succès ! Vous pouvez maintenant vous connecter.', 'success')
-            return redirect(url_for('login'))
-        else:
-            if wants_json:
-                return jsonify({'success': False, 'errors': result['errors']}), 400
-            for error in result['errors']:
-                flash(error, 'danger')
-    
-    return render_template('register.html')
-
-
-# Route de connexion
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    """Page de connexion."""
-    if request.method == 'POST':
-        wants_json = request.is_json or request.accept_mimetypes.best == 'application/json'
-        form_data = request.get_json(silent=True) if request.is_json else request.form
-        if not isinstance(form_data, dict) and request.is_json:
-            form_data = {}
-        form_data = form_data or {}
-        username = form_data.get('username', '').strip()
-        password = form_data.get('password', '')
-        totp_code = form_data.get('totp_code', '').strip()
-        recovery_code = form_data.get('recovery_code', '')
-        
-        if not username or not password:
-            if wants_json:
-                return jsonify({'success': False, 'errors': ['Nom d\'utilisateur et mot de passe requis.']}), 400
-            flash('Nom d\'utilisateur et mot de passe requis.', 'danger')
-            return render_template('login.html')
-        
-        # Obtenir l'adresse IP du client
-        ip_address = request.remote_addr
-        
-        # Tenter l'authentification
-        result = authenticate_user(
-            username=username,
-            password=password,
-            ip_address=ip_address,
-            totp_code=totp_code if totp_code else None,
-            recovery_code=recovery_code if recovery_code else None,
-        )
-        
-        if result['success']:
-            # Stocker le token de session
-            session['session_token'] = result['session_token']
-            session['username'] = result['user']['username']
-            session['user_id'] = result['user']['id']
-            if result.get('mfa_enrollment_required'):
-                session['enrollment_only'] = True
-                if wants_json:
-                    return jsonify({'success': True, 'user': result['user'], 'mfa_enrollment_required': True}), 200
-                flash('Réenrôlez votre facteur MFA pour terminer la connexion.', 'warning')
-                return redirect(url_for('mfa_enroll'))
-            if wants_json:
-                return jsonify({'success': True, 'user': result['user']}), 200
-            flash(f'Bienvenue, {result["user"]["username"]} !', 'success')
-            return redirect(url_for('dashboard'))
-        
-        elif result.get('mfa_required'):
-            if wants_json:
-                return jsonify({'success': False, 'mfa_required': True, 'errors': result['errors']}), 200
-            # MFA requis, afficher le champ TOTP
-            session['pending_username'] = username
-            session['pending_password'] = password  # En production, ne pas stocker !
-            flash('Veuillez entrer votre code d\'authentification à deux facteurs.', 'info')
-            return render_template('login.html', mfa_required=True, username=username)
-        
-        elif result.get('locked_until'):
-            if wants_json:
-                unlock_time = result['locked_until']
-                return jsonify({
-                    'success': False,
-                    'errors': result['errors'],
-                    'locked_until': unlock_time.isoformat() if hasattr(unlock_time, 'isoformat') else str(unlock_time),
-                }), 423
-            flash(f'Compte temporairement bloqué jusqu\'à {result["locked_until"].strftime("%H:%M:%S")}.', 'danger')
-        else:
-            if wants_json:
-                return jsonify({'success': False, 'errors': result.get('errors', ['Identifiant ou mot de passe incorrect.'])}), 401
-            for error in result['errors']:
-                flash(error, 'danger')
-    
-    return render_template('login.html')
-
-
-# Route du tableau de bord
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    """Tableau de bord utilisateur."""
-    session_data = validate_session(session['session_token'])
-    return render_template('dashboard.html', user=session_data)
-
-
-# Route d'enrôlement MFA
-@app.route('/mfa/enroll', methods=['GET', 'POST'])
-@login_required
-def mfa_enroll():
-    """Page d'enrôlement MFA."""
-    user_id = session.get('user_id')
-    username = session.get('username')
-    
-    if request.method == 'POST':
-        totp_code = request.form.get('totp_code', '').strip()
-        
-        if not totp_code:
-            flash('Veuillez entrer le code TOTP.', 'danger')
-            return redirect(url_for('mfa_enroll'))
-        
-        # Valider l'enrôlement
-        if validate_mfa_enrollment(user_id, totp_code):
-            if session.pop('enrollment_only', False):
-                session.clear()
-                flash('Nouveau facteur MFA enregistré. Reconnectez-vous.', 'success')
-                return redirect(url_for('login'))
-            flash('MFA activé avec succès ! Votre compte est maintenant plus sécurisé.', 'success')
-            return redirect(url_for('dashboard'))
-        else:
-            flash('Code TOTP invalide. Veuillez réessayer.', 'danger')
-            return redirect(url_for('mfa_enroll'))
-    
-    # Générer le secret et le QR code
-    try:
-        result = enroll_mfa(user_id, username)
-        
-        if result['success']:
-            # Stocker temporairement les codes de récupération dans la session
-            session['recovery_codes'] = result['recovery_codes']
-            
-            # Générer l'URI pour le QR code
-            qr_uri = result['qr_code_uri']
-            
-            return render_template('mfa_enroll.html', 
-                                   qr_uri=qr_uri,
-                                   secret=result['secret'],
-                                   recovery_codes=result['recovery_codes'])
-        else:
-            flash('Erreur lors de l\'enrôlement MFA.', 'danger')
-            return redirect(url_for('dashboard'))
-    
-    except Exception as e:
-        logger.error(f"Erreur MFA: {e}")
-        flash('Erreur lors de l\'enrôlement MFA.', 'danger')
-        return redirect(url_for('dashboard'))
-
-
-# Route de déconnexion
-@app.route('/logout')
-@login_required
-def logout():
-    """Déconnexion."""
-    session_token = session.get('session_token')
-    if session_token:
-        logout_user(session_token)
-    
-    session.clear()
-    flash('Vous avez été déconnecté avec succès.', 'info')
-    return redirect(url_for('index'))
-
-
-# Route API pour validation de mot de passe en temps réel
-@app.route('/api/validate-password', methods=['POST'])
-def api_validate_password():
-    """API pour valider un mot de passe en temps réel."""
-    data = request.get_json()
-    password = data.get('password', '')
-    username = data.get('username', '')
-    
-    result = validate_password(password, username)
-    
-    return jsonify({
-        'valid': result['valid'],
-        'errors': result['errors']
-    })
-
-
-@app.route('/password-reset', methods=['GET', 'POST'])
-def password_reset_request():
-    if request.method == 'GET':
-        return app.response_class(
-            '''<!doctype html><html lang="fr"><meta charset="utf-8"><title>Mot de passe oublié</title>
-            <h1>Mot de passe oublié</h1><form method="post">
-            <label>Nom d'utilisateur ou adresse e-mail <input name="identifier" required autocomplete="username"></label>
-            <button type="submit">Envoyer les instructions</button></form></html>''', mimetype='text/html')
-    data = request.get_json(silent=True) or request.form
-    result = request_password_reset(data.get('identifier', ''), request.remote_addr or 'unknown')
-    return jsonify(result), 200
-
-
-@app.route('/password-reset/confirm', methods=['GET', 'POST'])
-def password_reset_confirm():
-    if request.method == 'GET':
-        token = escape(request.args.get('token', ''), quote=True)
-        response = app.response_class(
-            f'''<!doctype html><html lang="fr"><meta charset="utf-8"><title>Réinitialiser le mot de passe</title>
-            <h1>Réinitialiser le mot de passe</h1><form method="post">
-            <input type="hidden" name="token" value="{token}">
-            <label>Nouveau mot de passe <input type="password" name="new_password" required autocomplete="new-password"></label>
-            <label>Code TOTP (si MFA activé) <input name="totp_code" inputmode="numeric" autocomplete="one-time-code"></label>
-            <label>Code de récupération <input name="recovery_code" autocomplete="off"></label>
-            <button type="submit">Confirmer</button></form></html>''', mimetype='text/html')
-        response.headers['Cache-Control'] = 'no-store'
-        response.headers['Referrer-Policy'] = 'no-referrer'
-        return response
-    data = request.get_json(silent=True) or request.form
-    result = complete_password_reset(
-        data.get('token', ''), data.get('new_password', ''), request.remote_addr or 'unknown',
-        data.get('totp_code'), data.get('recovery_code'))
-    return jsonify(result), (200 if result.get('success') else 400)
-
-
-@app.route('/admin/users/<int:user_id>/password-reset', methods=['POST'])
-@admin_required
-def admin_password_reset_request(user_id):
-    result = request_password_reset('', request.remote_addr or 'unknown',
-                                    initiated_by='admin', initiated_by_user_id=session.get('user_id'),
-                                    target_user_id=user_id)
-    # Admins address the target by ID; use the account's username only internally.
-    return jsonify({'message': 'Si le compte existe, les instructions ont été envoyées.'}), 200
-
-
-@app.route('/mfa/recovery/request', methods=['POST'])
-@login_required
-def mfa_recovery_request():
-    ok = request_mfa_recovery(session.get('user_id'), request.remote_addr or 'unknown')
-    return jsonify({'message': 'Si le compte peut être récupéré, les instructions ont été envoyées.'}), 200
-
-
-@app.route('/mfa/recovery/confirm', methods=['GET', 'POST'])
-@login_required
-def mfa_recovery_confirm():
-    if request.method == 'GET':
-        token = escape(request.args.get('token', ''), quote=True)
-        response = app.response_class(
-            f'''<!doctype html><html lang="fr"><meta charset="utf-8"><title>Récupération MFA</title>
-            <h1>Confirmer la récupération MFA</h1><form method="post">
-            <input type="hidden" name="token" value="{token}">
-            <label>Mot de passe actuel <input type="password" name="current_password" required autocomplete="current-password"></label>
-            <button type="submit">Confirmer</button></form></html>''', mimetype='text/html')
-        response.headers['Cache-Control'] = 'no-store'
-        response.headers['Referrer-Policy'] = 'no-referrer'
-        return response
-    data = request.get_json(silent=True) or request.form
-    ok = complete_mfa_recovery(session.get('user_id'), data.get('token', ''),
-                               data.get('current_password', ''), request.remote_addr or 'unknown')
-    if ok:
-        session.clear()
-        return jsonify({'success': True, 'message': 'MFA réinitialisé. Reconnectez-vous puis enrôlez un nouveau facteur.'}), 200
-    return jsonify({'success': False, 'message': 'Demande invalide ou expirée.'}), 400
-
-
-# Route de test (à désactiver en production)
-@app.route('/test')
-def test():
-    """Page de test pour vérifier l'installation."""
-    return render_template('test.html')
-
-
-# Gestionnaire d'erreur 404
-@app.errorhandler(404)
-def not_found(e):
-    return render_template('404.html'), 404
-
-
-# Gestionnaire d'erreur 500
-@app.errorhandler(500)
-def internal_error(e):
-    logger.error(f"Erreur serveur: {e}")
-    return render_template('500.html'), 500
-
-
-# Initialisation de la base de données au démarrage
 @app.before_request
-def before_first_request():
-    """Initialiser la BDD avant la première requête."""
-    if not hasattr(app, 'db_initialized'):
+def initialize_database_once() -> None:
+    """Try schema initialization once; public frontend pages stay available offline."""
+    global _database_initialized
+    if _database_initialized:
+        return
+    _database_initialized = True
+    try:
+        init_db()
+        init_db_orm()
+        logger.info("Base de données initialisée")
+    except Exception:
+        logger.exception("Impossible d'initialiser la base de données")
+
+
+def json_error(message: str, status: int, *, errors: list[str] | None = None):
+    payload: dict[str, Any] = {"success": False, "errors": errors or [message], "message": message}
+    return no_store(make_response(jsonify(payload), status))
+
+
+def no_store(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+def current_user() -> dict[str, Any] | None:
+    token = request.cookies.get(AUTH_COOKIE)
+    if not token:
+        return None
+    return validate_session(token)
+
+
+def login_required(view: Callable):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        if not user:
+            response = make_response(jsonify({"authenticated": False, "success": False, "errors": ["Authentification requise."]}), 401)
+            return no_store(response)
+        g.auth_user = user
+        mfa_setup_endpoints = {"api_mfa_enrollment", "api_mfa_enrollment_confirm"}
+        if (not user.get("mfa_enabled") or not user.get("mfa_verified")) and request.endpoint not in mfa_setup_endpoints:
+            return json_error(
+                "La double authentification est obligatoire. Configurez la MFA pour continuer.",
+                403,
+            )
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def admin_required(view: Callable):
+    @wraps(view)
+    @login_required
+    def wrapped(*args, **kwargs):
+        if g.auth_user.get("role") != "admin":
+            return json_error("Accès refusé.", 403)
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def set_auth_cookie(response, token: str):
+    response.set_cookie(
+        AUTH_COOKIE,
+        token,
+        max_age=int(SESSION_DURATION.total_seconds()),
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="Lax",
+        path="/",
+    )
+    return no_store(response)
+
+
+def clear_auth_cookie(response):
+    response.delete_cookie(AUTH_COOKIE, path="/", httponly=True, secure=COOKIE_SECURE, samesite="Lax")
+    return no_store(response)
+
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok", "service": "SecureAuth API"})
+
+
+@app.post("/register")
+def register():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return json_error("Corps JSON requis.", 400)
+    username = data.get("username")
+    email = data.get("email")
+    password = data.get("password")
+    password_confirm = data.get("password_confirm")
+    if not all(isinstance(value, str) and value for value in (username, email, password, password_confirm)):
+        return json_error("Tous les champs sont requis.", 400)
+    if password != password_confirm:
+        return json_error("Les mots de passe ne correspondent pas.", 400)
+    result = register_user(username.strip(), email.strip(), password)
+    if result.get("success"):
+        status = 201
+    elif result.get("error_code") == "database_unavailable":
+        status = 503
+    else:
+        status = 400
+    return no_store(make_response(jsonify(result), status))
+
+
+@app.post("/login")
+def login():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return json_error("Corps JSON requis.", 400)
+    username = data.get("username")
+    password = data.get("password")
+    if not isinstance(username, str) or not username.strip() or not isinstance(password, str) or not password:
+        return json_error("Nom d'utilisateur ou adresse e-mail et mot de passe requis.", 400)
+    result = authenticate_user(
+        username=username.strip(),
+        password=password,
+        ip_address=request.remote_addr or "unknown",
+        user_agent=request.user_agent.string or "unknown",
+        totp_code=data.get("totp_code") or None,
+        recovery_code=data.get("recovery_code") or None,
+    )
+    if result.get("success"):
+        previous_token = request.cookies.get(AUTH_COOKIE)
+        if previous_token:
+            logout_user(previous_token)
+        response = make_response(jsonify({
+            "success": True,
+            "user": result["user"],
+            "mfa_enrollment_required": result.get("mfa_enrollment_required", False),
+        }))
+        return set_auth_cookie(response, result["session_token"])
+    if result.get("mfa_required"):
+        response = make_response(jsonify({
+            "success": False,
+            "mfa_required": True,
+            "errors": result.get("errors", ["Un second facteur est requis."]),
+        }), 200)
+        return no_store(response)
+    if result.get("locked_until"):
+        response = make_response(jsonify({
+            "success": False,
+            "errors": result.get("errors", ["Trop de tentatives. Réessayez plus tard."]),
+            "locked_until": result["locked_until"].isoformat() if hasattr(result["locked_until"], "isoformat") else str(result["locked_until"]),
+        }), 423)
+        return no_store(response)
+    return json_error("Identifiant ou mot de passe incorrect.", 401, errors=result.get("errors"))
+
+
+@app.get("/api/auth/session")
+def auth_session():
+    user = current_user()
+    if not user:
+        response = make_response(jsonify({"authenticated": False}), 401)
+        return clear_auth_cookie(response) if request.cookies.get(AUTH_COOKIE) else no_store(response)
+    if user.get("mfa_enabled") and not user.get("mfa_verified"):
+        token = request.cookies.get(AUTH_COOKIE, "")
+        if token:
+            logout_user(token)
+        return clear_auth_cookie(make_response(jsonify({"authenticated": False}), 401))
+    response = make_response(jsonify({
+        "authenticated": True,
+        "user": {
+            "id": user["user_id"],
+            "username": user["username"],
+            "email": user["email"],
+            "role": user["role"],
+            "mfa_enabled": bool(user.get("mfa_enabled", False)),
+            "mfa_enrollment_required": not bool(user.get("mfa_enabled", False)),
+        },
+    }))
+    return no_store(response)
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    token = request.cookies.get(AUTH_COOKIE)
+    if token:
+        logout_user(token)
+    response = make_response(jsonify({"success": True, "message": "Déconnexion réussie."}))
+    return clear_auth_cookie(response)
+
+
+@app.post("/api/validate-password")
+def api_validate_password():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("password"), str):
+        return json_error("Mot de passe requis.", 400)
+    result = validate_password(data["password"], data.get("username", ""))
+    return no_store(make_response(jsonify(result)))
+
+
+@app.post("/api/account/password")
+@login_required
+def api_change_password():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return json_error("Corps JSON requis.", 400)
+    current_password = data.get("current_password")
+    new_password = data.get("new_password")
+    if not isinstance(current_password, str) or not current_password or not isinstance(new_password, str) or not new_password:
+        return json_error("Mot de passe actuel et nouveau mot de passe requis.", 400)
+    result = change_password(
+        g.auth_user["user_id"], current_password, new_password, request.remote_addr or "unknown"
+    )
+    if not result.get("success"):
+        return json_error("Le mot de passe n'a pas pu être modifié.", 400, errors=result.get("errors"))
+
+    # Revoke other sessions while keeping the session used to change the password.
+    db = None
+    try:
+        db = get_db_session()
+        db.query(SessionModel).filter(
+            SessionModel.user_id == g.auth_user["user_id"],
+            SessionModel.session_token != request.cookies.get(AUTH_COOKIE),
+        ).update({SessionModel.invalidated: True}, synchronize_session=False)
+        db.commit()
+    except Exception:
+        if db is not None:
+            db.rollback()
+        logger.exception("Impossible de révoquer les autres sessions après un changement de mot de passe")
+    finally:
+        if db is not None:
+            db.close()
+    return no_store(make_response(jsonify(result)))
+
+
+@app.post("/api/account/mfa/enrollment")
+@login_required
+def api_mfa_enrollment():
+    user = g.auth_user
+    if is_mfa_enabled(user["user_id"]):
+        return json_error("L'authentification MFA est déjà activée.", 409)
+    try:
+        result = enroll_mfa(user["user_id"], user["username"])
+    except Exception:
+        logger.exception("Échec de l'initialisation de l'enrôlement MFA")
+        return json_error("Impossible de démarrer l'enrôlement MFA.", 500)
+    response = make_response(jsonify({
+        "success": True,
+        "secret": result["secret"],
+        "qr_code_uri": result["qr_code_uri"],
+        "recovery_codes": result["recovery_codes"],
+    }))
+    return no_store(response)
+
+
+@app.post("/api/account/mfa/enrollment/confirm")
+@login_required
+def api_mfa_enrollment_confirm():
+    data = request.get_json(silent=True)
+    code = data.get("totp_code", "").strip() if isinstance(data, dict) and isinstance(data.get("totp_code"), str) else ""
+    if not code:
+        return json_error("Code TOTP requis.", 400)
+    ip_address = request.remote_addr or "unknown"
+    rate_identifier = f"mfa-enrollment:{g.auth_user['user_id']}"
+    rate = check_rate_limit(rate_identifier, ip_address)
+    if not rate.get("allowed"):
+        return json_error(rate.get("reason", "Trop de tentatives."), 423)
+    if not validate_mfa_enrollment(g.auth_user["user_id"], code):
+        record_login_attempt(rate_identifier, ip_address, False)
+        return json_error("Code TOTP invalide ou expiré.", 400)
+    record_login_attempt(rate_identifier, ip_address, True)
+    if not validate_session(request.cookies.get(AUTH_COOKIE, "")):
+        response = make_response(jsonify({
+            "success": True,
+            "reauthentication_required": True,
+            "message": "MFA activée. Reconnectez-vous pour terminer la récupération du compte.",
+        }))
+        return clear_auth_cookie(response)
+    session_token = request.cookies.get(AUTH_COOKIE, "")
+    db = get_db_session()
+    try:
+        active_session = db.query(SessionModel).filter(
+            SessionModel.session_token == session_token,
+            SessionModel.user_id == g.auth_user["user_id"],
+            SessionModel.invalidated.is_(False),
+        ).first()
+        if not active_session:
+            return json_error("Reconnectez-vous pour terminer l’activation de la MFA.", 401)
+        active_session.mfa_verified = True
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Impossible de finaliser la session après l'activation MFA")
+        return json_error("La MFA est activée. Reconnectez-vous pour continuer.", 500)
+    finally:
+        db.close()
+    response = make_response(jsonify({"success": True, "message": "Authentification MFA activée."}))
+    return no_store(response)
+
+
+@app.post("/api/account/mfa/disable")
+@login_required
+def api_mfa_disable():
+    return json_error("La double authentification est obligatoire et ne peut pas être désactivée.", 403)
+
+
+@app.post("/password-reset")
+def password_reset_request():
+    data = request.get_json(silent=True)
+    identifier = data.get("identifier", "") if isinstance(data, dict) else ""
+    result = request_password_reset(identifier, request.remote_addr or "unknown")
+    return no_store(make_response(jsonify(result)))
+
+
+@app.post("/password-reset/confirm")
+def password_reset_confirm():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return json_error("Corps JSON requis.", 400)
+    result = complete_password_reset(
+        data.get("token", ""),
+        data.get("new_password", ""),
+        request.remote_addr or "unknown",
+        data.get("totp_code"),
+        data.get("recovery_code"),
+    )
+    status = 200 if result.get("success") else 400
+    response = make_response(jsonify(result), status)
+    return clear_auth_cookie(response) if result.get("success") else no_store(response)
+
+
+@app.post("/mfa/recovery/request")
+def mfa_recovery_request():
+    data = request.get_json(silent=True)
+    identifier = data.get("identifier", "").strip() if isinstance(data, dict) and isinstance(data.get("identifier", ""), str) else ""
+    ip_address = request.remote_addr or "unknown"
+    # Apply a shared identifier/IP limit and record every request before account lookup.
+    allowed = check_rate_limit(identifier or "unknown", ip_address)
+    record_login_attempt(identifier or "unknown", ip_address, False)
+    if identifier and allowed.get("allowed"):
+        db = None
         try:
-            init_db()
-            init_db_orm()
-            app.db_initialized = True
-            logger.info("Base de données initialisée")
-        except Exception as e:
-            logger.error(f"Erreur initialisation BDD: {e}")
+            db = get_db_session()
+            user = db.query(User).filter(
+                User.is_active.is_(True),
+                or_(User.username == identifier, User.email == identifier.lower()),
+            ).first()
+            if user and user.mfa_enabled:
+                request_mfa_recovery(user.id, ip_address)
+        except Exception:
+            logger.exception("MFA recovery request could not be completed")
+        finally:
+            if db is not None:
+                db.close()
+    return no_store(make_response(jsonify({
+        "success": True,
+        "message": "Si le compte peut être récupéré, les instructions ont été envoyées.",
+    })))
 
 
-if __name__ == '__main__':
-    # En développement seulement
-    app.run(debug=True, host='0.0.0.0', port=5000)
+@app.post("/mfa/recovery/confirm")
+def mfa_recovery_confirm():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return json_error("Corps JSON requis.", 400)
+    ok = complete_mfa_recovery(
+        None, data.get("token", ""), data.get("current_password", ""),
+        request.remote_addr or "unknown",
+    )
+    if not ok:
+        return json_error("Demande invalide ou expirée.", 400)
+    response = make_response(jsonify({
+        "success": True,
+        "message": "MFA réinitialisé. Reconnectez-vous pour enrôler un nouveau facteur.",
+    }))
+    return clear_auth_cookie(response)
+
+
+@app.post("/admin/users/<int:user_id>/password-reset")
+@admin_required
+def admin_password_reset_request(user_id: int):
+    request_password_reset(
+        "", request.remote_addr or "unknown", initiated_by="admin",
+        initiated_by_user_id=g.auth_user["user_id"], target_user_id=user_id,
+    )
+    return no_store(make_response(jsonify({
+        "success": True,
+        "message": "Si le compte existe, les instructions ont été envoyées.",
+    })))
+
+
+@app.get("/")
+@app.get("/<path:frontend_path>")
+def frontend(frontend_path: str = ""):
+    """Serve the built React SPA when present; use Vite on port 5173 in development."""
+    if FRONTEND_DIST.is_dir() and (FRONTEND_DIST / "index.html").is_file():
+        requested_file = FRONTEND_DIST / frontend_path
+        if frontend_path and requested_file.is_file() and FRONTEND_DIST in requested_file.resolve().parents:
+            return send_from_directory(FRONTEND_DIST, frontend_path)
+        return send_from_directory(FRONTEND_DIST, "index.html")
+    if not frontend_path:
+        return jsonify({"service": "SecureAuth API", "frontend": "Run npm run dev --prefix frontend"})
+    return jsonify({"success": False, "errors": ["Ressource introuvable."]}), 404
+
+
+@app.errorhandler(404)
+def not_found(_error):
+    return jsonify({"success": False, "errors": ["Ressource introuvable."]}), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    logger.error("Erreur API: %s", error)
+    return jsonify({"success": False, "errors": ["Erreur interne."]}), 500
+
+
+@app.after_request
+def security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
+
+
+if __name__ == "__main__":
+    app.run(debug=os.environ.get("FLASK_DEBUG", "true").lower() == "true", host="127.0.0.1", port=int(os.environ.get("PORT", "5000")))
